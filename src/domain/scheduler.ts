@@ -9,7 +9,8 @@
  * - 苦手度・目標点との差が大きい教科ほど重みを上げ、空いた時間には重い教科を前倒しで入れる
  * - 1日に扱う教科数と、1教材・1教科あたりの時間に上限を設けて、ダラダラ1教科だけにならないようにする
  * - 使える時間の loadFactor 分だけ埋め、残りは遅れを吸収する予備にする
- * - 時間が足りないときは、得意教科の3周目→2周目の順に削り、何を削ったかを返す（提出物と1周目は削らない）
+ * - 時間が足りないときは、点につながりにくいもの（得意教科の仕上げ・提出物でない1周目）から削り、
+ *   何を削ったかを返す。提出物の1周目だけは削らない
  */
 import { addDays, dateRange, diffDays } from './date.ts';
 import type {
@@ -33,8 +34,12 @@ const SUBJECT_CAP_MIN = 120;
 const PASS1_DEADLINE_RATIO = 0.5;
 /** 3周目を始める日（テストの何日前から） */
 const PASS3_START_DAYS_BEFORE = 3;
-/** 入らなかったときの損の重み（1周目は提出物・最低限の理解なので最優先） */
-const PASS_VALUE = { 1: 100, 2: 3, 3: 1 } as const;
+/**
+ * 入らなかったときの損の重み（1分あたり）。時間が足りないときに何を残すかを決める。
+ * 提出物の1周目は出さないといけないので別格。それ以外は「×を直す2周目」が一番点につながり、
+ * 提出物でない1周目（教科書の読み直しなど）はその次、仕上げが最後
+ */
+const LOSS_PER_MIN = { submission1: 100, pass1: 2.5, pass2: 3, pass3: 1 } as const;
 /** 1日の目安量を均等ペースよりどれだけ多めにするか（前倒し気味にして終盤に余裕を残す） */
 const FRONT_LOAD = 1.25;
 /** 1周目→2周目でまだできない割合（2周目の記録がまだないときの見積もり） */
@@ -172,13 +177,18 @@ interface WorkItem {
   mpu: number;
   release: ISODate;
   deadline: ISODate;
-  /** 絶対に守る締切（提出物の締切前日、またはテスト前日）。目安の締切を過ぎたらこちらを使う */
+  /**
+   * 目安の締切を過ぎたあとの締切。1周目のあとに解き直しがあるなら、その時間を残せる日（テスト3日前）まで。
+   * 遅れた1周目がずるずる直前まで続いて、解き直しの時間がなくなるのを防ぐ
+   */
+  relaxedDeadline: ISODate;
+  /** 絶対に守る締切（提出物の締切前日、またはテスト前日） */
   hardDeadline: ISODate;
   /** この日より前にやる（テスト当日以降はやらない） */
   examDate: ISODate;
   weight: number;
   memory: boolean;
-  /** 削ってはいけない（1周目） */
+  /** 削ってはいけない（提出物の1周目） */
   protected: boolean;
 }
 
@@ -217,6 +227,14 @@ function buildItems(input: PlanInput): WorkItem[] {
         // 前の周が残っているなら、その周が終わるまで始めない（allocate 内で解放する）
         const prevLeft = pass > 1 && prog.target[(pass - 1) as Pass] - prog.done[(pass - 1) as Pass] > 0;
         const baseRelease = pass === 3 ? maxDate(startDate, pass3Start) : startDate;
+        const hardDeadline =
+          pass === 1 && m.isSubmission && m.dueDate
+            ? minDate(addDays(m.dueDate, -1), lastDay)
+            : lastDay;
+        const relaxedDeadline =
+          pass === 1 && m.passes >= 2
+            ? maxDate(deadlines[1], minDate(hardDeadline, pass3Start))
+            : hardDeadline;
         items.push({
           key: `${s.id}|${m.id}|${pass}`,
           subject: s,
@@ -228,14 +246,12 @@ function buildItems(input: PlanInput): WorkItem[] {
           mpu: minutesPerUnit(m, s, pass),
           release: prevLeft ? '9999-12-31' : baseRelease,
           deadline: deadlines[pass],
-          hardDeadline:
-            pass === 1 && m.isSubmission && m.dueDate
-              ? minDate(addDays(m.dueDate, -1), lastDay)
-              : lastDay,
+          relaxedDeadline,
+          hardDeadline,
           examDate: E,
           weight,
           memory,
-          protected: pass === 1,
+          protected: pass === 1 && m.isSubmission,
         });
       }
     }
@@ -295,9 +311,10 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
     const eligible = () =>
       items.filter((i) => i.remaining > 0 && i.release <= day && day < i.examDate);
 
-    // 目安の締切を過ぎたものは、テスト前日を本当の締切として他と競わせる
-    // （遅れた1周目が、テストが近い教科の解き直しを押しのけないように）
-    const deadlineOf = (i: WorkItem) => (day > i.deadline ? i.hardDeadline : i.deadline);
+    // 目安の締切を過ぎたものは、締切を段階的にゆるめて他と競わせる（目安→解き直しの時間を残せる日→絶対の締切）。
+    // 遅れた1周目が、テストが近い教科の解き直しを押しのけないように
+    const deadlineOf = (i: WorkItem) =>
+      day <= i.deadline ? i.deadline : day <= i.relaxedDeadline ? i.relaxedDeadline : i.hardDeadline;
     const daysLeft = (i: WorkItem) => Math.max(1, diffDays(day, deadlineOf(i)) + 1);
 
     // 今日扱う教科の枠は、「理想のペース（目安の締切までに均等に進める）からの遅れ」が
@@ -419,9 +436,16 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
   return { tasks, leftover: items.filter((i) => i.remaining > 0) };
 }
 
-/** 入らなかったときの「損」の大きさ。1周目 ≫ 2周目 > 3周目、苦手な教科ほど大きい */
+/** 入らなかったときの「損」の大きさ。苦手な教科ほど大きい */
 function lossValue(i: WorkItem): number {
-  return PASS_VALUE[i.pass] * i.weight;
+  const base = i.protected
+    ? LOSS_PER_MIN.submission1
+    : i.pass === 1
+      ? LOSS_PER_MIN.pass1
+      : i.pass === 2
+        ? LOSS_PER_MIN.pass2
+        : LOSS_PER_MIN.pass3;
+  return base * i.weight;
 }
 
 function totalLoss(leftover: WorkItem[], dropped: WorkItem[]): number {
@@ -475,13 +499,13 @@ export function buildPlan(input: PlanInput): PlanResult {
   const loss = (r: AllocResult) => totalLoss(r.leftover, base.filter((i) => dropped.has(i.key)));
   let result = run();
 
-  // 入りきらないときは、2・3周目を丸ごと外して、もっと大事なもの（1周目・苦手教科の解き直し）に
+  // 入りきらないときは、損の小さい項目を丸ごと外して、もっと大事なもの（提出物・苦手教科の解き直し）に
   // 時間を回せるか試す。全体の「損」が減るときだけ外す
   if (result.leftover.length > 0) {
-    // 試す順: 3周目→2周目、同じ周なら重みの軽い（得意な）教科から
+    // 試す順: 損の小さい（点につながりにくい・得意な教科の）ものから
     const candidates = base
       .filter((i) => !i.protected && i.remaining > 0)
-      .sort((x, y) => y.pass - x.pass || x.weight - y.weight);
+      .sort((x, y) => lossValue(x) - lossValue(y));
     for (const c of candidates) {
       if (result.leftover.length === 0) break;
       dropped.add(c.key);

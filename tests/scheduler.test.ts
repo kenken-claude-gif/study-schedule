@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildPlan, materialProgress } from '../src/domain/scheduler.ts';
 import { availableMinutes } from '../src/domain/availability.ts';
 import { addDays } from '../src/domain/date.ts';
-import type { Exam, LifeEvent, PlannedTask, Settings } from '../src/domain/types.ts';
+import type { Exam, ExamSubject, LifeEvent, Material, PlannedTask, Settings, Weakness } from '../src/domain/types.ts';
 
 const settings: Settings = { loadFactor: 0.8, maxSubjectsPerDay: 3 };
 
@@ -125,16 +125,58 @@ test('苦手な数学は得意な歴史より先に1周目が終わる（前倒�
   assert.ok(mathEnd <= histEnd, `math ${mathEnd} hist ${histEnd}`);
 });
 
-test('時間が足りないときは得意教科の後の周から削り、1周目は削らない', () => {
+test('時間が足りないときは削るものが出るが、提出物の1周目は削らない', () => {
   const r = buildPlan({ exam: makeExam(), startDate: '2026-11-02', capacity: () => 45, logs: [], settings });
   assert.ok(r.trimmed.length > 0);
-  assert.ok(r.trimmed.every((t) => t.pass !== 1));
-  // 1周目は全部入っている
-  for (const id of ['math-wb', 'eng-vocab', 'eng-wb', 'hist-tb']) {
-    const units = tasksOf(r.tasks, id, 1).reduce((s, t) => s + t.units, 0);
-    const m = makeExam().subjects.flatMap((s) => s.materials).find((x) => x.id === id)!;
-    assert.equal(units, m.rangeEnd - m.rangeStart + 1, id);
+  const materials = makeExam().subjects.flatMap((s) => s.materials);
+  const isSubmission = (id: string) => materials.find((m) => m.id === id)!.isSubmission;
+  assert.ok(r.trimmed.every((t) => !(t.pass === 1 && isSubmission(t.materialId))));
+  for (const m of materials.filter((x) => x.isSubmission)) {
+    const units = tasksOf(r.tasks, m.id, 1).reduce((s, t) => s + t.units, 0);
+    assert.equal(units, m.rangeEnd - m.rangeStart + 1, m.id);
   }
+});
+
+test('残り1週間・7教科で時間が足りないとき、得意教科の読み直しより苦手教科の解き直しを優先する', () => {
+  const M = (id: string, kind: Material['kind'], unit: Material['unit'], a: number, b: number, mpu: number, due?: string): Material => ({
+    id, name: id, kind, unit, rangeStart: a, rangeEnd: b, minutesPerUnit: mpu,
+    isSubmission: due !== undefined, dueDate: due, passes: 3,
+  });
+  const S = (id: string, kind: ExamSubject['kind'], examDate: string, weakness: Weakness, materials: Material[], lastScore?: number, targetScore?: number): ExamSubject =>
+    ({ id, name: id, kind, examDate, weakness, materials, lastScore, targetScore });
+  const exam: Exam = {
+    id: 'week',
+    name: '期末',
+    studyStart: '2026-11-09',
+    subjects: [
+      S('数学I', 'understand', '2026-11-16', 5, [M('m1', 'workbook', 'page', 1, 20, 8, '2026-11-16')], 45, 65),
+      S('数学A', 'understand', '2026-11-17', 4, [M('ma', 'workbook', 'page', 1, 15, 8, '2026-11-17')], 50, 65),
+      S('英コミ', 'mixed', '2026-11-16', 3, [M('ev', 'vocab', 'item', 1, 150, 0.6), M('ew', 'workbook', 'page', 1, 15, 6, '2026-11-16')], 60, 70),
+      S('現国', 'mixed', '2026-11-17', 2, [M('gp', 'print', 'sheet', 1, 5, 15), M('gk', 'vocab', 'item', 1, 50, 0.6)], 70, 75),
+      S('歴総', 'memorize', '2026-11-18', 2, [M('ht', 'textbook', 'page', 1, 30, 4), M('hp', 'print', 'sheet', 1, 4, 12)], 72, 80),
+      S('化基', 'understand', '2026-11-18', 4, [M('cw', 'workbook', 'problem', 1, 40, 4, '2026-11-18')], 52, 70),
+      S('生基', 'memorize', '2026-11-17', 3, [M('bt', 'textbook', 'page', 1, 25, 4), M('bw', 'workbook', 'page', 1, 10, 6, '2026-11-17')], 65, 75),
+    ],
+  };
+  // 平日3時間・土日6時間（1周目は全部入るが、全部の周は入らない量）
+  const capacity = (d: string) => ([0, 6].includes(new Date(`${d}T00:00Z`).getUTCDay()) ? 360 : 180);
+  const r = buildPlan({ exam, startDate: '2026-11-09', capacity, logs: [], settings });
+  assert.ok(r.trimmed.length > 0, '時間が足りるケースになっている');
+  assert.deepEqual(r.overflow, []);
+  const minutes = (id: string, pass: number) => tasksOf(r.tasks, id, pass).reduce((s, t) => s + t.minutes, 0);
+  // 一番苦手な数学Iの解き直しは削られない
+  const m1Pass2 = materialProgress(exam.subjects[0].materials[0], exam.subjects[0], []).target[2];
+  assert.equal(tasksOf(r.tasks, 'm1', 2).reduce((s, t) => s + t.units, 0), m1Pass2);
+  // 提出物はすべて提出日の前日までに終わる
+  for (const s of exam.subjects) {
+    for (const m of s.materials.filter((x) => x.isSubmission)) {
+      const p1 = tasksOf(r.tasks, m.id, 1);
+      assert.equal(p1.reduce((a, t) => a + t.units, 0), m.rangeEnd - m.rangeStart + 1, m.id);
+      assert.ok(p1.at(-1)!.date < m.dueDate!, `${m.id} の提出が間に合わない`);
+    }
+  }
+  // 削られるのは得意な教科（苦手度2）の分が中心
+  assert.ok(minutes('m1', 2) > minutes('gp', 2));
 });
 
 test('時間が足りなくても、提出物の1周目は提出日の前日までに入る', () => {

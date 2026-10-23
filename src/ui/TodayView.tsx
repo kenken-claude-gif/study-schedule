@@ -123,7 +123,7 @@ function TodayBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t:
 
       {plan.future.overflow.length > 0 && (
         <div className="banner bad">
-          ⚠️ このままだと1周目（提出物を含む）が間に合わない。「予定」の画面で勉強できる時間を増やせないか、家族と相談しよう。
+          ⚠️ このままだと提出物が間に合わない。「予定」の画面で勉強できる時間を増やせないか、家族と相談しよう。
         </div>
       )}
       {late.tasks.length > 0 && (
@@ -133,7 +133,7 @@ function TodayBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t:
       )}
       {plan.future.trimmed.length > 0 && (
         <div className="banner warn">
-          時間が足りないので、解き直し・仕上げの一部（{plan.future.trimmed.length}件）を省いているよ。
+          時間が足りないので、点数につながりにくいもの（{plan.future.trimmed.length}件）を省いているよ。
           <button className="link" onClick={() => goTo('plan')}>くわしく</button>
         </div>
       )}

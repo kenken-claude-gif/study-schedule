@@ -98,7 +98,7 @@ function PlanBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t: 
           {plan.future.trimmed.length > 0 && (
             <>
               <h2>省いたもの</h2>
-              <p className="small muted">時間が足りないので、得意な教科の仕上げ・解き直しから順に省いたよ。予定が空いたら自動で戻る。</p>
+              <p className="small muted">時間が足りないので、点数につながりにくいもの（得意な教科の仕上げや読み直し）から省いて、苦手な教科の解き直しを残したよ。予定が空いたら自動で戻る。</p>
               <ul className="small">
                 {plan.future.trimmed.map((r) => <li key={`${r.materialId}${r.pass}`}>{refName(exam, r)}</li>)}
               </ul>
