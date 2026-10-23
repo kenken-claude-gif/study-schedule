@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, newId } from '../app/store.tsx';
 import {
+  AHEAD_PREFIX,
   activeExam,
   behind,
   capacityFn,
@@ -12,6 +13,7 @@ import {
 import { eventsOn } from '../domain/availability.ts';
 import { diffDays, formatMinutes, formatShort } from '../domain/date.ts';
 import { counter, taskHowTo, taskTitle, wrongLabel } from '../domain/labels.ts';
+import { pagesOf, taskRanges, toRanges } from '../domain/scheduler.ts';
 import type { Exam, PlannedTask } from '../domain/types.ts';
 import { appToday, Dot, NumberField, PassChip, subjectColor } from './common.tsx';
 import type { TabKey } from './App.tsx';
@@ -82,8 +84,8 @@ function TodayBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t:
         <Header title={exam.name} />
         <div className="card stack">
           <h2>テストおつかれさま！</h2>
-          <p className="small">結果が返ってきたら「テスト範囲」の画面で点数を入れて振り返ろう。次のテストの計画に生かせるよ。</p>
-          <button className="btn primary" onClick={() => goTo('exam')}>点数を入れる</button>
+          <p className="small">結果が返ってきたら「成績」の画面で点数を入れて振り返ろう。グラフで伸びが見えるし、次のテストの計画にも生かせるよ。</p>
+          <button className="btn primary" onClick={() => goTo('scores')}>点数を入れる</button>
         </div>
       </>
     );
@@ -196,6 +198,8 @@ function TodayBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t:
           )}
         </div>
       )}
+
+      {!beforeStart && <AheadCard exam={exam} today={today} next={plan.future.tasks} open={allDone || todays.length === 0} />}
     </>
   );
 }
@@ -213,12 +217,27 @@ function PreviewTask({ exam, task }: { exam: Exam; task: PlannedTask }) {
   );
 }
 
-function TaskCard({ exam, task, today }: { exam: Exam; task: PlannedTask; today: string }) {
+/**
+ * 1つのタスクの表示と記録。
+ * ahead=true は「先取り」：明日以降の計画のタスクを今日やった分として記録する。
+ * 記録した分は明日以降の計画から自動で減る（計画は記録した量から毎回作り直すため）
+ */
+function TaskCard({
+  exam,
+  task,
+  today,
+  ahead = false,
+}: {
+  exam: Exam;
+  task: PlannedTask;
+  today: string;
+  ahead?: boolean;
+}) {
   const { state, update } = useStore();
   const [open, setOpen] = useState(false);
   const s = exam.subjects.find((x) => x.id === task.subjectId);
   const m = s?.materials.find((x) => x.id === task.materialId);
-  const done = doneForTask(state, task.id);
+  const done = ahead ? 0 : doneForTask(state, task.id);
   const left = Math.max(0, task.units - done);
   const [amount, setAmount] = useState<number | undefined>(left);
   const [wrong, setWrong] = useState<number | undefined>(undefined);
@@ -226,6 +245,10 @@ function TaskCard({ exam, task, today }: { exam: Exam; task: PlannedTask; today:
   const finished = left === 0;
   const c = counter(m);
   const askWrong = task.pass < 3;
+
+  const taskPages = pagesOf(taskRanges(task) ?? []);
+  const rangesFor = (amt: number) =>
+    taskPages.length > 0 ? toRanges(taskPages.slice(done, done + amt)) : undefined;
 
   const record = (amt: number) => {
     if (amt <= 0) return;
@@ -242,7 +265,10 @@ function TaskCard({ exam, task, today }: { exam: Exam; task: PlannedTask; today:
           pass: task.pass,
           amount: amt,
           wrong: askWrong && wrong !== undefined ? Math.min(wrong, amt) : undefined,
-          taskId: task.id,
+          // 先取りは明日以降のタスクIDと混ざらないよう、別のIDにする
+          taskId: ahead ? `${AHEAD_PREFIX}${today}|${newId()}` : task.id,
+          // 1周目は「どのページをやったか」も残す（タスクの範囲の、まだやっていない頭から amt 個分）
+          ranges: rangesFor(amt),
         },
       ],
     }));
@@ -267,7 +293,7 @@ function TaskCard({ exam, task, today }: { exam: Exam; task: PlannedTask; today:
           </div>
           <div className="title">{taskTitle(task, m, s)}</div>
           <div className="meta">
-            目安 {task.minutes}分
+            {ahead && `${formatShort(task.date)}の分・`}目安 {task.minutes}分
             {done > 0 && !finished && `・${done}/${task.units}${c} できた`}
           </div>
         </div>
@@ -333,5 +359,69 @@ function TaskCard({ exam, task, today }: { exam: Exam; task: PlannedTask; today:
         </div>
       )}
     </div>
+  );
+}
+
+/** 今日の分が終わったあとに、明日以降の計画を先取りでやる */
+function AheadCard({
+  exam,
+  today,
+  next,
+  open,
+}: {
+  exam: Exam;
+  today: string;
+  next: PlannedTask[];
+  open: boolean;
+}) {
+  const { state, update } = useStore();
+  const aheadLogs = state.logs.filter(
+    (l) => l.examId === exam.id && l.date === today && l.taskId?.startsWith(AHEAD_PREFIX),
+  );
+  // 次に勉強する日のタスク（記録すると計画が作り直されて、その次の分が出てくる）
+  const nextDate = next.find((t) => t.date > today)?.date;
+  const tasks = nextDate ? next.filter((t) => t.date === nextDate) : [];
+  if (tasks.length === 0 && aheadLogs.length === 0) return null;
+
+  const label = (materialId: string) => {
+    const s = exam.subjects.find((x) => x.materials.some((m) => m.id === materialId));
+    const m = s?.materials.find((x) => x.id === materialId);
+    return s && m ? `${s.name} ${m.name}` : '?';
+  };
+
+  return (
+    <details className="card" open={open}>
+      <summary><b>先取りでやる</b>（明日以降の分）</summary>
+      <p className="small muted">
+        今日の分が終わって、まだやれそうなら先に進めよう。記録した分は、明日からの計画から自動で減るよ。
+      </p>
+      {aheadLogs.length > 0 && (
+        <div className="banner ok small">
+          <div>今日先取りした分：</div>
+          {aheadLogs.map((l) => {
+            const m = exam.subjects.flatMap((s) => s.materials).find((x) => x.id === l.materialId);
+            return (
+              <div key={l.id} className="spread">
+                <span>
+                  ✓ {label(l.materialId)} {l.amount}
+                  {m ? counter(m) : ''}
+                </span>
+                <button
+                  className="link"
+                  style={{ color: 'var(--bad)' }}
+                  onClick={() => update((st) => ({ ...st, logs: st.logs.filter((x) => x.id !== l.id) }))}
+                >
+                  取り消す
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {tasks.map((t) => (
+        // 記録すると同じIDのまま量が減るので、量と範囲もキーに入れて入力欄を作り直す
+        <TaskCard key={`${t.id}|${t.units}|${t.from ?? ''}`} exam={exam} task={t} today={today} ahead />
+      ))}
+    </details>
   );
 }

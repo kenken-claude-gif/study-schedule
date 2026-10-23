@@ -4,15 +4,17 @@ import { PlanView } from './PlanView.tsx';
 import { ExamView } from './ExamView.tsx';
 import { ScheduleView } from './ScheduleView.tsx';
 import { GuideView } from './GuideView.tsx';
+import { ScoresView } from './ScoresView.tsx';
 
-export type TabKey = 'today' | 'plan' | 'exam' | 'schedule' | 'guide';
+export type TabKey = 'today' | 'plan' | 'exam' | 'schedule' | 'scores' | 'guide';
 
 const TABS: { key: TabKey; label: string; ico: string }[] = [
   { key: 'today', label: '今日', ico: '✅' },
   { key: 'plan', label: '計画', ico: '🗓️' },
-  { key: 'exam', label: 'テスト範囲', ico: '📚' },
+  { key: 'exam', label: '範囲', ico: '📚' },
   { key: 'schedule', label: '予定', ico: '🏀' },
-  { key: 'guide', label: 'コツ・設定', ico: '💡' },
+  { key: 'scores', label: '成績', ico: '📈' },
+  { key: 'guide', label: 'コツ', ico: '💡' },
 ];
 
 export function App() {
@@ -24,6 +26,7 @@ export function App() {
         {tab === 'plan' && <PlanView goTo={setTab} />}
         {tab === 'exam' && <ExamView />}
         {tab === 'schedule' && <ScheduleView />}
+        {tab === 'scores' && <ScoresView />}
         {tab === 'guide' && <GuideView />}
       </main>
       <nav className="tabs">

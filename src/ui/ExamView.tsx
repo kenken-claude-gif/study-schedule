@@ -366,7 +366,7 @@ function MaterialEditor(props: { m: Material; onChange: (p: Partial<Material>) =
   );
 }
 
-function ResultsCard({ exam }: { exam: Exam }) {
+export function ResultsCard({ exam, title }: { exam: Exam; title?: string }) {
   const { update } = useStore();
   const setResult = (sid: string, v: number | undefined) =>
     update((s) => ({
@@ -381,7 +381,7 @@ function ResultsCard({ exam }: { exam: Exam }) {
     }));
   return (
     <details className="card">
-      <summary>テストの結果を入れる（振り返り）</summary>
+      <summary>{title ?? 'テストの結果を入れる（振り返り）'}</summary>
       <p className="small muted">
         返ってきた点数を入れておくと、次のテストを「前のテストからコピー」で作ったときに、前回の点数として使われるよ。目標との差が大きい教科ほど次は時間を多めに取る。
       </p>

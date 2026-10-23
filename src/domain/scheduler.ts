@@ -21,6 +21,7 @@ import type {
   Pass,
   PlannedTask,
   ProgressLog,
+  Ranges,
   Settings,
 } from './types.ts';
 
@@ -137,6 +138,49 @@ function estimateNext(
   return Math.min(base, Math.ceil(rec.ratedWrong + rest * rate));
 }
 
+/** 番号のリストを、連続した範囲にまとめる（[1,2,3,7] → [[1,3],[7,7]]） */
+export function toRanges(nums: number[]): Ranges {
+  const sorted = [...nums].sort((a, b) => a - b);
+  const out: Ranges = [];
+  for (const n of sorted) {
+    const last = out[out.length - 1];
+    if (last && n <= last[1] + 1) last[1] = Math.max(last[1], n);
+    else out.push([n, n]);
+  }
+  return out;
+}
+
+/** 範囲を番号のリストに広げる */
+export function pagesOf(ranges: Ranges): number[] {
+  const out: number[] = [];
+  for (const [a, b] of ranges) for (let n = a; n <= b; n++) out.push(n);
+  return out;
+}
+
+/**
+ * 1周目でまだやっていない番号（ページ・問題など）を、前から順に返す。
+ * 範囲つきの記録はその範囲を、範囲のない古い記録は「前から順にやった」とみなして埋める
+ */
+export function pass1Remaining(m: Material, logs: ProgressLog[]): number[] {
+  const done = new Set<number>();
+  let unranged = 0;
+  for (const l of logs) {
+    if (l.materialId !== m.id || l.pass !== 1) continue;
+    if (l.ranges) for (const n of pagesOf(l.ranges)) done.add(n);
+    else unranged += l.amount;
+  }
+  const rest: number[] = [];
+  for (let n = m.rangeStart; n <= m.rangeEnd; n++) {
+    if (done.has(n)) continue;
+    if (unranged > 0) {
+      unranged--;
+      continue;
+    }
+    rest.push(n);
+  }
+  return rest;
+}
+
 /** 教材ごとの進み具合（周ごとの目標量とやった量） */
 export function materialProgress(
   m: Material,
@@ -155,7 +199,7 @@ export function materialProgress(
   }
   return {
     target: { 1: total, 2: t2, 3: t3 },
-    done: { 1: Math.min(total, p1.amount), 2: Math.min(t2, p2.amount), 3: Math.min(t3, p3.amount) },
+    done: { 1: total - pass1Remaining(m, mine).length, 2: Math.min(t2, p2.amount), 3: Math.min(t3, p3.amount) },
   };
 }
 
@@ -173,7 +217,8 @@ interface WorkItem {
   remaining: number;
   /** 計画を作り始めた時点の残り量（理想のペースの計算に使う） */
   initial: number;
-  nextFrom?: number;
+  /** 1周目のみ：まだやっていない番号（前から順に割り当てる） */
+  pages?: number[];
   mpu: number;
   release: ISODate;
   deadline: ISODate;
@@ -242,7 +287,7 @@ function buildItems(input: PlanInput): WorkItem[] {
           pass,
           remaining: Math.max(0, remaining),
           initial: Math.max(0, remaining),
-          nextFrom: pass === 1 ? m.rangeStart + prog.done[1] : undefined,
+          pages: pass === 1 ? pass1Remaining(m, logs) : undefined,
           mpu: minutesPerUnit(m, s, pass),
           release: prevLeft ? '9999-12-31' : baseRelease,
           deadline: deadlines[pass],
@@ -259,6 +304,12 @@ function buildItems(input: PlanInput): WorkItem[] {
   return items;
 }
 
+/** タスクの範囲（古い計画は from/to しか持っていないので、そこから作る） */
+export function taskRanges(t: PlannedTask): Ranges | undefined {
+  if (t.ranges) return t.ranges;
+  return t.from !== undefined && t.to !== undefined ? [[t.from, t.to]] : undefined;
+}
+
 function assumedToLog(t: PlannedTask): ProgressLog {
   return {
     id: `assumed-${t.id}`,
@@ -268,6 +319,7 @@ function assumedToLog(t: PlannedTask): ProgressLog {
     materialId: t.materialId,
     pass: t.pass,
     amount: t.units,
+    ranges: t.pass === 1 ? taskRanges(t) : undefined,
   };
 }
 
@@ -353,8 +405,7 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
           subjectId: it.subject.id,
           materialId: it.material.id,
           pass: it.pass,
-          from: it.nextFrom,
-          to: it.nextFrom !== undefined ? it.nextFrom - 1 : undefined,
+
           units: 0,
           minutes: 0,
         };
@@ -363,8 +414,11 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       }
       t.units += units;
       t.minutes += minutes;
-      if (t.to !== undefined) t.to += units;
-      if (it.nextFrom !== undefined) it.nextFrom += units;
+      if (it.pages) {
+        t.ranges = toRanges([...pagesOf(t.ranges ?? []), ...it.pages.splice(0, units)]);
+        t.from = t.ranges[0][0];
+        t.to = t.ranges[t.ranges.length - 1][1];
+      }
 
       it.remaining -= units;
       capLeft -= minutes;

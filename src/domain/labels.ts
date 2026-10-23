@@ -1,4 +1,4 @@
-import { isMemoryMaterial } from './scheduler.ts';
+import { isMemoryMaterial, taskRanges } from './scheduler.ts';
 import { UNIT_LABEL } from './presets.ts';
 import type { ExamSubject, Material, Pass, PlannedTask } from './types.ts';
 
@@ -44,7 +44,8 @@ export function taskTitle(t: PlannedTask, m: Material, s: ExamSubject): string {
   const memory = isMemoryMaterial(m, s);
   const c = counter(m);
   if (t.pass === 1) {
-    const r = t.from !== undefined && t.to !== undefined ? rangeText(m, t.from, t.to) : `${t.units}${c}`;
+    const ranges = taskRanges(t);
+    const r = ranges ? ranges.map(([a, b]) => rangeText(m, a, b)).join('と') : `${t.units}${c}`;
     return memory ? `${m.name} ${r} を覚える` : `${m.name} ${r} を解く`;
   }
   if (t.pass === 2) {

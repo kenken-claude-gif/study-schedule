@@ -9,6 +9,8 @@ export type SubjectKind = 'understand' | 'memorize' | 'mixed';
 export type MaterialKind = 'workbook' | 'print' | 'textbook' | 'notes' | 'vocab' | 'other';
 export type Unit = 'page' | 'problem' | 'item' | 'sheet';
 export type Pass = 1 | 2 | 3;
+/** 範囲のリスト（例: [[1, 5], [9, 10]] = 1〜5と9〜10）。両端を含む */
+export type Ranges = [number, number][];
 
 /** 範囲に含まれる教材（ワーク・プリント・単語など） */
 export interface Material {
@@ -88,6 +90,8 @@ export interface ProgressLog {
   /** ×と△の数（問題演習・暗記チェックで見つかった「できなかった数」） */
   wrong?: number;
   taskId?: string;
+  /** 1周目でやった範囲。先取りなど順番どおりでない記録でも、どこが終わったかわかるように持つ */
+  ranges?: Ranges;
 }
 
 /** スケジューラが作る1つのタスク */
@@ -100,8 +104,26 @@ export interface PlannedTask {
   /** 1周目のみ：範囲の開始・終了 */
   from?: number;
   to?: number;
+  /** 1周目のみ：やる範囲（途中に終わった部分があると複数になる） */
+  ranges?: Ranges;
   units: number;
   minutes: number;
+}
+
+/** 模試の1教科分の結果。点数・満点・偏差値はどれも任意（返ってきたものだけ入れる） */
+export interface MockScore {
+  subject: string;
+  score?: number;
+  max?: number;
+  deviation?: number;
+}
+
+/** 模試の結果 */
+export interface MockExam {
+  id: string;
+  name: string;
+  date: ISODate;
+  scores: MockScore[];
 }
 
 export interface Settings {
@@ -121,4 +143,6 @@ export interface AppState {
   /** その日の朝に確定した計画（examId → date → タスク）。遅れの判定に使う */
   dayPlans: Record<string, Record<ISODate, PlannedTask[]>>;
   settings: Settings;
+  /** 模試の結果（後から追加した項目なので、古いデータにはない） */
+  mockExams?: MockExam[];
 }

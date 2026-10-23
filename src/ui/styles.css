@@ -153,3 +153,49 @@ input[type='number'] { width: 100%; }
 .big { font-size: 28px; font-weight: 800; }
 details > summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+
+/* 成績グラフ。色はデータ可視化の検証済み配色（1〜4番）をライト・ダークそれぞれで使う */
+:root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --chart-grid: #e8e8ee;
+  --chart-axis: #c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --chart-grid: #2c303b;
+    --chart-axis: #454a57;
+  }
+}
+.chart { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.chart .grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart .axis { stroke: var(--chart-axis); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart .end-label { fill: var(--text); font-size: 11px; }
+.chart .line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot-mark { fill: currentColor; stroke: var(--card); stroke-width: 2; }
+.chart .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart-tip {
+  position: absolute; top: 4px; width: 170px; max-width: 60%;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.12); pointer-events: none;
+}
+.chart-tip .tip-title { font-weight: 700; margin-bottom: 2px; }
+.chart-tip .tip-row { display: flex; align-items: center; gap: 6px; }
+.chart-tip .tip-row b { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-tip .tip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.chart-tip .tip-row .dot { flex: none; }
+.seg-toggle { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg-toggle button { flex: 1; border: 0; background: var(--card); color: var(--text); padding: 7px 0; font-size: 14px; }
+.seg-toggle button.on { background: var(--accent); color: #fff; font-weight: 700; }
+table.scores { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.scores th, table.scores td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: right; font-variant-numeric: tabular-nums; }
+table.scores th:first-child, table.scores td:first-child { text-align: left; }
+.scroll-x { overflow-x: auto; }

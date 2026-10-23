@@ -1,8 +1,15 @@
 /** 画面から使う計画まわりの処理（その日の計画の確定・遅れの判定など） */
 import { availableMinutes } from '../domain/availability.ts';
 import { addDays } from '../domain/date.ts';
-import { buildPlan, type PlanResult } from '../domain/scheduler.ts';
+import { buildPlan, pagesOf, taskRanges, toRanges, type PlanResult } from '../domain/scheduler.ts';
 import type { AppState, Exam, ISODate, PlannedTask, ProgressLog } from '../domain/types.ts';
+
+/** 先取り（明日以降の分を今日やった）記録の taskId の先頭 */
+export const AHEAD_PREFIX = 'ahead:';
+
+export function isAheadLog(l: ProgressLog): boolean {
+  return l.taskId?.startsWith(AHEAD_PREFIX) ?? false;
+}
 
 export function activeExam(state: AppState): Exam | undefined {
   return state.exams.find((e) => e.id === state.activeExamId);
@@ -45,8 +52,9 @@ export function ensureTodayFrozen(state: AppState, today: ISODate, force = false
     exam,
     startDate: today,
     capacity: capacityFn(state),
-    // 今日の記録は除いて作る。作り直しても今日のタスクIDが変わらず、記録とつながったままになる
-    logs: examLogs(state, exam.id).filter((l) => l.date !== today),
+    // 今日のタスクの記録は除いて作る。作り直しても今日のタスクIDが変わらず、記録とつながったままになる。
+    // 先取りした分は除かない（もうやった分なので、今日の計画にも入れない）
+    logs: examLogs(state, exam.id).filter((l) => !(l.date === today && !isAheadLog(l))),
     settings: state.settings,
   });
   const todays = plan.tasks.filter((t) => t.date === today);
@@ -68,8 +76,17 @@ export interface CurrentPlan {
 /** 今日の確定済みタスク＋明日以降の計画（今日の残りはやる前提で組む） */
 export function currentPlan(state: AppState, exam: Exam, today: ISODate): CurrentPlan {
   const todays = state.dayPlans[exam.id]?.[today] ?? [];
+  // 今日の残り（まだやっていない分）は、やる前提で明日以降の計画から除く
   const pendingToday = todays
-    .map((t) => ({ ...t, units: Math.max(0, t.units - doneForTask(state, t.id)) }))
+    .map((t) => {
+      const done = doneForTask(state, t.id);
+      const ranges = taskRanges(t);
+      return {
+        ...t,
+        units: Math.max(0, t.units - done),
+        ranges: ranges ? toRanges(pagesOf(ranges).slice(done)) : undefined,
+      };
+    })
     .filter((t) => t.units > 0);
   const start = today < exam.studyStart ? exam.studyStart : todays.length > 0 ? addDays(today, 1) : today;
   const future = buildPlan({
