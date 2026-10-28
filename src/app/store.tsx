@@ -1,6 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { DEFAULT_WEEKLY } from '../domain/presets.ts';
 import type { AppState } from '../domain/types.ts';
+import { isAppState } from './validate.ts';
+
+export { isAppState };
 
 const STORAGE_KEY = 'study-schedule:v1';
 
@@ -16,21 +19,6 @@ export function initialState(): AppState {
   };
 }
 
-/** バックアップや保存データが今の形かざっくり確かめる（壊れたデータで画面が落ちないように） */
-export function isAppState(v: unknown): v is AppState {
-  if (typeof v !== 'object' || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    o.version === 1 &&
-    Array.isArray(o.exams) &&
-    Array.isArray(o.events) &&
-    Array.isArray(o.logs) &&
-    typeof o.weekly === 'object' &&
-    typeof o.dayPlans === 'object' &&
-    typeof o.settings === 'object'
-  );
-}
-
 function load(): AppState {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return initialState();
@@ -42,7 +30,11 @@ function load(): AppState {
     console.error('保存データの読み込みに失敗:', e);
   }
   // 壊れたデータは消さずに別名で残しておく（あとで手で復旧できるように）
-  localStorage.setItem(`${STORAGE_KEY}:broken:${Date.now()}`, raw);
+  try {
+    localStorage.setItem(`${STORAGE_KEY}:broken:${Date.now()}`, raw);
+  } catch (e) {
+    console.error('壊れたデータの退避に失敗:', e);
+  }
   return initialState();
 }
 
@@ -57,15 +49,39 @@ interface Store {
   state: AppState;
   update: (fn: Updater) => void;
   replace: (s: AppState) => void;
+  /** 最後の保存に失敗したか（容量不足など） */
+  saveError: boolean;
+}
+
+/** 今の状態を端末に保存する。容量不足などで失敗したら false */
+function save(state: AppState): boolean {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
+  } catch (e) {
+    console.error('データの保存に失敗:', e);
+    return false;
+  }
+}
+
+/** 画面が落ちたときに、保存されている生のデータを取り出す（エラー画面のバックアップ用） */
+export function rawSavedData(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch (e) {
+    console.error('保存データを読めませんでした:', e);
+    return null;
+  }
 }
 
 const Ctx = createContext<Store | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(load);
+  const [saveError, setSaveError] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    setSaveError(!save(state));
   }, [state]);
 
   useEffect(() => {
@@ -75,7 +91,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((fn: Updater) => setState((s) => fn(s)), []);
   const replace = useCallback((s: AppState) => setState(s), []);
-  return <Ctx.Provider value={{ state, update, replace }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ state, update, replace, saveError }}>{children}</Ctx.Provider>;
 }
 
 export function useStore(): Store {

@@ -2,13 +2,16 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App.tsx';
 import { StoreProvider } from './app/store.tsx';
+import { ErrorBoundary } from './ui/ErrorBoundary.tsx';
 import './ui/styles.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <StoreProvider>
-      <App />
-    </StoreProvider>
+    <ErrorBoundary>
+      <StoreProvider>
+        <App />
+      </StoreProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );
 
