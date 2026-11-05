@@ -17,6 +17,7 @@ import { pagesOf, taskRanges, toRanges } from '../domain/scheduler.ts';
 import type { Exam, PlannedTask } from '../domain/types.ts';
 import { appToday, Dot, NumberField, PassChip, subjectColor } from './common.tsx';
 import type { TabKey } from './App.tsx';
+import { ShareCard } from './ShareCard.tsx';
 
 export function TodayView({ goTo }: { goTo: (t: TabKey) => void }) {
   const { state, update } = useStore();
@@ -200,6 +201,7 @@ function TodayBody({ exam, today, goTo }: { exam: Exam; today: string; goTo: (t:
       )}
 
       {!beforeStart && <AheadCard exam={exam} today={today} next={plan.future.tasks} open={allDone || todays.length === 0} />}
+      <ShareCard exam={exam} today={today} />
     </>
   );
 }

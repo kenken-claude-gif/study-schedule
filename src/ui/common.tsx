@@ -8,10 +8,17 @@ const SUBJECT_COLORS = [
   '#b5651d', '#3b8ea5', '#d1495b', '#5f6caf',
 ];
 
-export function subjectColor(exam: Exam, subjectId: string): string {
-  const i = exam.subjects.findIndex((s) => s.id === subjectId);
-  return SUBJECT_COLORS[(i < 0 ? 0 : i) % SUBJECT_COLORS.length];
+/** 教科の並び順から色を決める */
+export function colorAt(index: number): string {
+  return SUBJECT_COLORS[(index < 0 ? 0 : index) % SUBJECT_COLORS.length];
 }
+
+export function subjectColor(exam: Exam, subjectId: string): string {
+  return colorAt(exam.subjects.findIndex((s) => s.id === subjectId));
+}
+
+/** 進み具合のバーの、周ごとの色 */
+export const PASS_COLOR: Record<Pass, string> = { 1: '#5b9bea', 2: '#f08a24', 3: '#9b5de5' };
 
 /**
  * 今日の日付。動作確認用に URL の ?today=YYYY-MM-DD で上書きできる

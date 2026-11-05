@@ -6,10 +6,8 @@ import { addDays, dateRange, formatMinutes, formatShort } from '../domain/date.t
 import { PASS_DESC, PASS_NAME, counter, taskTitle } from '../domain/labels.ts';
 import { materialProgress, type PlanItemRef } from '../domain/scheduler.ts';
 import type { Exam, Pass, PlannedTask } from '../domain/types.ts';
-import { appToday, Dot, PassChip, subjectColor } from './common.tsx';
+import { appToday, Dot, PASS_COLOR, PassChip, subjectColor } from './common.tsx';
 import type { TabKey } from './App.tsx';
-
-const PASS_COLOR: Record<Pass, string> = { 1: '#5b9bea', 2: '#f08a24', 3: '#9b5de5' };
 
 export function PlanView({ goTo }: { goTo: (t: TabKey) => void }) {
   const { state } = useStore();
