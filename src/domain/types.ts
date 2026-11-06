@@ -27,6 +27,11 @@ export interface Material {
   dueDate?: ISODate;
   /** 何周目まで回すか（1〜3） */
   passes: Pass;
+  /**
+   * さらっと眺める教材（参考書など、時間のわりに点に結びつきにくいもの）。
+   * 時間が足りないときに先に削られ、空き時間には後回しになる（後から追加した項目なので、古いデータにはない）
+   */
+  skim?: boolean;
 }
 
 export type Weakness = 1 | 2 | 3 | 4 | 5;

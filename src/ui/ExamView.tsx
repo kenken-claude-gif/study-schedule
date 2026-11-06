@@ -355,7 +355,14 @@ function MaterialEditor(props: { m: Material; onChange: (p: Partial<Material>) =
           />
         )}
         {m.isSubmission && <span className="small muted">提出日</span>}
+        <label className="row small">
+          <input type="checkbox" checked={m.skim ?? false} onChange={(e) => onChange({ skim: e.target.checked || undefined })} />
+          さらっと眺める
+        </label>
       </div>
+      {m.skim && (
+        <div className="small muted">参考書など、時間のわりに点に結びつきにくいもの。時間が足りないときは先に削られ、空いた時間には後回しになるよ。</div>
+      )}
       <div className="spread small muted">
         <span>
           全部で {units}{UNIT_LABEL[m.unit].counter}・1周目の目安 {Math.round(units * m.minutesPerUnit)}分

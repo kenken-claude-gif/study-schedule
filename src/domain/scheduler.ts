@@ -11,6 +11,8 @@
  * - 使える時間の loadFactor 分だけ埋め、残りは遅れを吸収する予備にする
  * - 時間が足りないときは、点につながりにくいもの（得意教科の仕上げ・提出物でない1周目）から削り、
  *   何を削ったかを返す。提出物の1周目だけは削らない
+ * - 「さらっと眺める」教材（参考書など）は重みを下げ、先に削る
+ * - どれだけ時間が足りなくても、どの教科も1周目を最低1つは残し、一度は計画に入れる（勉強0分の教科を作らない）
  */
 import { addDays, dateRange, diffDays } from './date.ts';
 import type {
@@ -41,6 +43,8 @@ const PASS3_START_DAYS_BEFORE = 3;
  * 提出物でない1周目（教科書の読み直しなど）はその次、仕上げが最後
  */
 const LOSS_PER_MIN = { submission1: 100, pass1: 2.5, pass2: 3, pass3: 1 } as const;
+/** 「さらっと眺める」教材の重みの倍率。時間が足りないときに先に削り、前倒しも後回しにする */
+const SKIM_WEIGHT_FACTOR = 0.3;
 /** 1日の目安量を均等ペースよりどれだけ多めにするか（前倒し気味にして終盤に余裕を残す） */
 const FRONT_LOAD = 1.25;
 /** 1周目→2周目でまだできない割合（2周目の記録がまだないときの見積もり） */
@@ -328,7 +332,7 @@ function buildItems(input: PlanInput): WorkItem[] {
           relaxedDeadline,
           hardDeadline,
           examDate: E,
-          weight,
+          weight: m.skim ? weight * SKIM_WEIGHT_FACTOR : weight,
           memory,
           protected: pass === 1 && m.isSubmission,
           todayDeadline: lastDay,
@@ -422,8 +426,13 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       const behindUnits = i.initial * frac - (i.initial - i.remaining);
       lag.set(i.subject.id, (lag.get(i.subject.id) ?? 0) + behindUnits * i.mpu * i.weight);
     }
+    // 遅れを分で比べると、量の多い教科がいつも上に来て、量の少ない教科（単語帳だけ、など）に
+    // 順番が回らないまま試験日になることがある。この計画でまだ一度も入っていない教科を先にして、
+    // どの教科にも一度は手をつけさせる
+    const startedSet = new Set(tasks.map((t) => t.subjectId));
+    const started = (sid: string) => Number(startedSet.has(sid));
     const allowed = new Set(subjectsToday);
-    for (const [sid] of [...lag].sort((x, y) => y[1] - x[1])) {
+    for (const [sid] of [...lag].sort((x, y) => started(x[0]) - started(y[0]) || y[1] - x[1])) {
       if (allowed.size >= settings.maxSubjectsPerDay) break;
       allowed.add(sid);
     }
@@ -620,8 +629,16 @@ export function buildPlan(rawInput: PlanInput): PlanResult {
     const candidates = base
       .filter((i) => !i.protected && i.remaining > 0)
       .sort((x, y) => lossValue(x) - lossValue(y));
+    // 教科ごとに、外していない1周目がいくつ残っているか。
+    // 損は1分あたりで比べるので、放っておくと教科がまるごと外れて「その教科は勉強0分」になりうる。
+    // 2・3周目は1周目が終わるまで始まらないので、1周目を最低1つは残して、どの教科にも手をつけさせる
+    const pass1Left = new Map<string, number>();
+    for (const i of base) {
+      if (i.pass === 1 && i.remaining > 0) pass1Left.set(i.subject.id, (pass1Left.get(i.subject.id) ?? 0) + 1);
+    }
     for (const c of candidates) {
       if (result.leftover.length === 0) break;
+      if (c.pass === 1 && (pass1Left.get(c.subject.id) ?? 0) <= 1) continue;
       dropped.add(c.key);
       // 外した項目の損だけで今の損を超えるなら、作り直しても採用されない（入りきらない分の損は0以上）。
       // allocate は重いので、結果が変わらないとわかる試しは飛ばす。浮動小数の足し算の誤差で
@@ -635,6 +652,7 @@ export function buildPlan(rawInput: PlanInput): PlanResult {
       const trial = run();
       if (loss(trial) < loss(result) - 1e-9) {
         result = trial;
+        if (c.pass === 1) pass1Left.set(c.subject.id, (pass1Left.get(c.subject.id) ?? 0) - 1);
       } else {
         dropped.delete(c.key);
       }

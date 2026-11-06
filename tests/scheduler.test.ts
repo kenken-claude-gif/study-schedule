@@ -254,3 +254,54 @@ test('予定がある日は勉強できる時間が減り、毎週の予定も�
   const allDay: LifeEvent[] = [{ id: 'b', title: '法事', category: '家族', date: '2026-11-09', allDay: true }];
   assert.equal(availableMinutes(weekly, allDay, '2026-11-09'), 0);
 });
+
+/** 時間不足のケース用の教材 */
+function mat(id: string, kind: Material['kind'], unit: Material['unit'], a: number, b: number, mpu: number, extra: Partial<Material> = {}): Material {
+  return { id, name: id, kind, unit, rangeStart: a, rangeEnd: b, minutesPerUnit: mpu, isSubmission: false, passes: 3, ...extra };
+}
+
+test('量が使える時間の3倍あっても、勉強0分の教科は出ない', () => {
+  // 実際の高1の定期テスト範囲（11教科・35教材）と同じ量。全部3周すると約140時間、使える時間は約43時間
+  const S = (id: string, kind: ExamSubject['kind'], examDate: string, materials: Material[]): ExamSubject =>
+    ({ id, name: id, kind, examDate, weakness: 3, materials });
+  const tb = (id: string, a: number, b: number) => mat(id, 'textbook', 'page', a, b, 4);
+  const wb = (id: string, a: number, b: number, isSubmission = false) => mat(id, 'workbook', 'page', a, b, 8, { isSubmission });
+  const exam: Exam = {
+    id: 'big', name: '後期中間', studyStart: '2026-11-07',
+    subjects: [
+      S('現国', 'mixed', '2026-11-24', [mat('kanji', 'vocab', 'page', 134, 175, 6)]),
+      S('言文', 'memorize', '2026-11-24', [mat('kobun', 'vocab', 'item', 1, 150, 1.5), wb('bunpo-n', 20, 39), tb('bunpo', 41, 85), wb('kanbun-n', 12, 17), tb('kanbun', 30, 45)]),
+      S('地理', 'memorize', '2026-11-25', [tb('geo1', 58, 72), tb('geo2', 186, 189)]),
+      S('歴史', 'memorize', '2026-11-25', [tb('his1', 202, 205), tb('his2', 210, 217), tb('his3', 220, 223), tb('his4', 226, 233), wb('hisn1', 148, 149), wb('hisn2', 152, 169)]),
+      S('数1', 'understand', '2026-11-26', [tb('m1t', 164, 185), tb('mat', 80, 134), wb('c1', 82, 95, true), wb('c2', 161, 188, true)]),
+      S('数2', 'understand', '2026-11-26', [tb('m2t', 14, 77), wb('c3', 123, 160, true)]),
+      S('物理', 'understand', '2026-11-27', [tb('phy', 76, 130), wb('phyn', 31, 51), wb('lead', 32, 55)]),
+      S('生物', 'memorize', '2026-11-27', [tb('bio', 112, 161), wb('bion', 50, 73)]),
+      S('英コミ', 'mixed', '2026-11-28', [tb('bri', 60, 101), wb('brin', 38, 65), mat('leap', 'vocab', 'item', 794, 1335, 0.6)]),
+      S('論表', 'mixed', '2026-11-28', [tb('les', 30, 47), wb('lesw', 26, 39), tb('sogo', 166, 259), mat('anshou', 'vocab', 'item', 115, 202, 1.5), mat('elixir', 'other', 'item', 8, 11, 20)]),
+      S('情報', 'mixed', '2026-11-29', [tb('inf1', 90, 122), tb('inf2', 154, 170)]),
+    ],
+  };
+  const capacity = (d: string) => ([0, 6].includes(new Date(`${d}T00:00Z`).getUTCDay()) ? 240 : 120);
+  const r = buildPlan({ exam, startDate: '2026-11-07', capacity, logs: [], settings });
+  assert.ok(r.demandMinutes > r.capacityMinutes * 3, '時間が足りないケースになっていない');
+  for (const s of exam.subjects) {
+    const minutes = r.tasks.filter((t) => t.subjectId === s.id).reduce((a, t) => a + t.minutes, 0);
+    assert.ok(minutes > 0, `${s.id} が0分`);
+  }
+});
+
+test('時間が足りないとき、「さらっと眺める」教材は同じ量のふつうの教材より先に削られる', () => {
+  const exam: Exam = {
+    id: 'skim', name: '中間', studyStart: '2026-11-09',
+    subjects: [{
+      id: 'eng', name: '論理・表現', kind: 'mixed', examDate: '2026-11-16', weakness: 3,
+      // 眺める教材を後ろに置く（重みが同じなら前の教材から削られるので、並び順のおかげで通らないように）
+      materials: [mat('main', 'textbook', 'page', 1, 40, 4), mat('ref', 'textbook', 'page', 1, 40, 4, { skim: true })],
+    }],
+  };
+  const r = buildPlan({ exam, startDate: '2026-11-09', capacity: () => 60, logs: [], settings });
+  const minutes = (id: string) => r.tasks.filter((t) => t.materialId === id).reduce((a, t) => a + t.minutes, 0);
+  assert.ok(r.trimmed.some((t) => t.materialId === 'ref'), '眺める教材が削られていない');
+  assert.ok(minutes('main') > minutes('ref'), `main ${minutes('main')} ref ${minutes('ref')}`);
+});
