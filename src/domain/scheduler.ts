@@ -150,6 +150,30 @@ export function toRanges(nums: number[]): Ranges {
   return out;
 }
 
+/**
+ * 範囲に番号を足す。toRanges([...pagesOf(ranges), ...nums]) と同じ結果。
+ * 1周目のページは前から順に割り当てるので、足す番号はふつう全部いまの範囲より後ろにある。
+ * そのときは広げ直さずに後ろへつなぐだけにする（そうでなければ広げ直す）
+ */
+function appendRanges(ranges: Ranges, nums: number[]): Ranges {
+  const lastEnd = ranges.length > 0 ? ranges[ranges.length - 1][1] : -Infinity;
+  let ascending = true;
+  for (let k = 0; k < nums.length; k++) {
+    if (nums[k] <= (k === 0 ? lastEnd : nums[k - 1])) {
+      ascending = false;
+      break;
+    }
+  }
+  if (!ascending) return toRanges([...pagesOf(ranges), ...nums]);
+  const out: Ranges = ranges.map(([x, y]) => [x, y]);
+  for (const n of nums) {
+    const last = out[out.length - 1];
+    if (last && n <= last[1] + 1) last[1] = Math.max(last[1], n);
+    else out.push([n, n]);
+  }
+  return out;
+}
+
 /** 範囲を番号のリストに広げる */
 export function pagesOf(ranges: Ranges): number[] {
   const out: number[] = [];
@@ -235,6 +259,9 @@ interface WorkItem {
   memory: boolean;
   /** 削ってはいけない（提出物の1周目） */
   protected: boolean;
+  /** allocate の作業用：その日の締切と残り日数（毎朝、今日やれる項目について入れ直す） */
+  todayDeadline: ISODate;
+  todayDaysLeft: number;
 }
 
 function minDate(a: ISODate, b: ISODate): ISODate {
@@ -242,6 +269,13 @@ function minDate(a: ISODate, b: ISODate): ISODate {
 }
 function maxDate(a: ISODate, b: ISODate): ISODate {
   return a > b ? a : b;
+}
+/**
+ * 日付の並べ替え用の比較。'YYYY-MM-DD' は文字の大小がそのまま日付の前後になる。
+ * localeCompare と同じ順になるが、並べ替えの中で何万回も呼ぶので軽い比較にしている
+ */
+function cmpDate(a: ISODate, b: ISODate): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function buildItems(input: PlanInput): WorkItem[] {
@@ -297,6 +331,8 @@ function buildItems(input: PlanInput): WorkItem[] {
           weight,
           memory,
           protected: pass === 1 && m.isSubmission,
+          todayDeadline: lastDay,
+          todayDaysLeft: 1,
         });
       }
     }
@@ -340,7 +376,8 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
   const tasks: PlannedTask[] = [];
   const caps = days.map((d) => Math.floor(input.capacity(d) * settings.loadFactor));
   // capsFrom[i] = i日目以降の使える時間の合計
-  const capsFrom = caps.reduceRight<number[]>((acc, c) => [c + (acc[0] ?? 0), ...acc], []);
+  const capsFrom = new Array<number>(caps.length);
+  for (let k = caps.length - 1, sum = 0; k >= 0; k--) capsFrom[k] = sum += caps[k];
 
   for (const [di, day] of days.entries()) {
     const dayCap = caps[di];
@@ -360,19 +397,25 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
     const itemMin = new Map<string, number>();
     const todayTask = new Map<string, PlannedTask>();
 
-    const eligible = () =>
-      items.filter((i) => i.remaining > 0 && i.release <= day && day < i.examDate);
+    // 今日やれる項目。1日の途中で増えることはない（次の周の開始日は早くても翌日になる）ので、
+    // 朝に1回だけ選んで、あとは「残りがあるか」だけ見る
+    const eligibleAtStart = items.filter((i) => i.remaining > 0 && i.release <= day && day < i.examDate);
 
     // 目安の締切を過ぎたものは、締切を段階的にゆるめて他と競わせる（目安→解き直しの時間を残せる日→絶対の締切）。
-    // 遅れた1周目が、テストが近い教科の解き直しを押しのけないように
-    const deadlineOf = (i: WorkItem) =>
-      day <= i.deadline ? i.deadline : day <= i.relaxedDeadline ? i.relaxedDeadline : i.hardDeadline;
-    const daysLeft = (i: WorkItem) => Math.max(1, diffDays(day, deadlineOf(i)) + 1);
+    // 遅れた1周目が、テストが近い教科の解き直しを押しのけないように。
+    // 項目と日付だけで決まるので、並べ替えや give の中で何度も計算しないよう、朝に1回出しておく
+    for (const i of eligibleAtStart) {
+      i.todayDeadline =
+        day <= i.deadline ? i.deadline : day <= i.relaxedDeadline ? i.relaxedDeadline : i.hardDeadline;
+      i.todayDaysLeft = Math.max(1, diffDays(day, i.todayDeadline) + 1);
+    }
+    const deadlineOf = (i: WorkItem) => i.todayDeadline;
+    const daysLeft = (i: WorkItem) => i.todayDaysLeft;
 
     // 今日扱う教科の枠は、「理想のペース（目安の締切までに均等に進める）からの遅れ」が
     // 大きい教科から順に決める。昨日やった教科は遅れが小さくなるので、自然にローテーションになる
     const lag = new Map<string, number>();
-    for (const i of eligible()) {
+    for (const i of eligibleAtStart) {
       const from = maxDate(i.release, input.startDate);
       const span = Math.max(1, diffDays(from, i.deadline) + 1);
       const frac = Math.min(1, (diffDays(from, day) + 1) / span);
@@ -415,7 +458,7 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       t.units += units;
       t.minutes += minutes;
       if (it.pages) {
-        t.ranges = toRanges([...pagesOf(t.ranges ?? []), ...it.pages.splice(0, units)]);
+        t.ranges = appendRanges(t.ranges ?? [], it.pages.splice(0, units));
         t.from = t.ranges[0][0];
         t.to = t.ranges[t.ranges.length - 1][1];
       }
@@ -440,8 +483,8 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
     };
 
     // A: 締切に間に合わせるための「今日の必要量」。締切が近い順
-    const a = eligible().sort(
-      (x, y) => deadlineOf(x).localeCompare(deadlineOf(y)) || y.weight - x.weight,
+    const a = [...eligibleAtStart].sort(
+      (x, y) => cmpDate(deadlineOf(x), deadlineOf(y)) || y.weight - x.weight,
     );
     const needOf = (it: WorkItem) => {
       const need = Math.ceil(it.remaining / daysLeft(it));
@@ -449,7 +492,7 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       return Math.max(need, Math.min(minUnits, it.remaining));
     };
     // A0: 絶対の締切（提出日・テスト前日）に間に合うための最低量を先に確保する
-    const byHard = [...a].sort((x, y) => x.hardDeadline.localeCompare(y.hardDeadline));
+    const byHard = [...a].sort((x, y) => cmpDate(x.hardDeadline, y.hardDeadline));
     for (const it of byHard) {
       if (capLeft <= 0) break;
       const hardDays = Math.max(1, diffDays(day, it.hardDeadline) + 1);
@@ -477,8 +520,8 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       if (want > 0) give(it, want);
     }
     // B: 目安量に届くまで、苦手・伸びしろの大きい教科を前倒し
-    const b = eligible().sort(
-      (x, y) => y.weight - x.weight || x.deadline.localeCompare(y.deadline),
+    const b = eligibleAtStart.filter((i) => i.remaining > 0).sort(
+      (x, y) => y.weight - x.weight || cmpDate(x.deadline, y.deadline),
     );
     for (const it of b) {
       const room = budget - (dayCap - capLeft);
@@ -539,8 +582,25 @@ function releaseAfterMainPlan(
 }
 
 /** 計画を作る。入りきらないときは削れるものから削って作り直す */
-export function buildPlan(input: PlanInput): PlanResult {
+export function buildPlan(rawInput: PlanInput): PlanResult {
+  // 使える時間は、外す候補を試すたびに全日分を聞き直すことになるので、日付ごとに覚えておく
+  // （画面の capacity は予定の一覧をなめるので、1回ごとが軽くない）
+  const capByDate = new Map<ISODate, number>();
+  const input: PlanInput = {
+    ...rawInput,
+    capacity: (d) => {
+      let c = capByDate.get(d);
+      if (c === undefined) {
+        c = rawInput.capacity(d);
+        capByDate.set(d, c);
+      }
+      return c;
+    },
+  };
   const base = buildItems(input);
+  // allocate は項目を書き換える（残り量・ページ・開始日）ので、試すたびに base の写しを渡す。
+  // buildItems をやり直すのと同じ中身になる
+  const freshItems = (): WorkItem[] => base.map((i) => ({ ...i, pages: i.pages?.slice() }));
   const demandMinutes = Math.ceil(base.reduce((s, i) => s + i.remaining * i.mpu, 0));
   const lastExam = base.reduce((mx, i) => maxDate(mx, i.examDate), input.startDate);
   const capacityMinutes = dateRange(input.startDate, addDays(lastExam, -1)).reduce(
@@ -549,7 +609,7 @@ export function buildPlan(input: PlanInput): PlanResult {
   );
 
   const dropped = new Set<string>();
-  const run = () => allocate(buildItems(input).filter((i) => !dropped.has(i.key)), input);
+  const run = () => allocate(freshItems().filter((i) => !dropped.has(i.key)), input);
   const loss = (r: AllocResult) => totalLoss(r.leftover, base.filter((i) => dropped.has(i.key)));
   let result = run();
 
@@ -563,6 +623,15 @@ export function buildPlan(input: PlanInput): PlanResult {
     for (const c of candidates) {
       if (result.leftover.length === 0) break;
       dropped.add(c.key);
+      // 外した項目の損だけで今の損を超えるなら、作り直しても採用されない（入りきらない分の損は0以上）。
+      // allocate は重いので、結果が変わらないとわかる試しは飛ばす。浮動小数の足し算の誤差で
+      // 判定が変わらないよう、わずかに余裕を見てはっきり超えるときだけ飛ばす
+      const droppedLoss = totalLoss([], base.filter((i) => dropped.has(i.key)));
+      const current = loss(result);
+      if (droppedLoss > current + 1e-6 * Math.max(1, current)) {
+        dropped.delete(c.key);
+        continue;
+      }
       const trial = run();
       if (loss(trial) < loss(result) - 1e-9) {
         result = trial;
@@ -575,7 +644,7 @@ export function buildPlan(input: PlanInput): PlanResult {
   // 外した項目は、確定した計画の空き時間に入るだけ入れる
   let filled: AllocResult = { tasks: [], leftover: [] };
   if (dropped.size > 0) {
-    const fillItems = buildItems(input).filter((i) => dropped.has(i.key));
+    const fillItems = freshItems().filter((i) => dropped.has(i.key));
     for (const it of fillItems) releaseAfterMainPlan(it, result, dropped, input.startDate);
     filled = allocate(fillItems, input, result.tasks);
   }
@@ -586,7 +655,7 @@ export function buildPlan(input: PlanInput): PlanResult {
     .map((i) => toRef(i));
   return {
     tasks: [...result.tasks, ...filled.tasks].sort(
-      (x, y) => x.date.localeCompare(y.date) || y.minutes - x.minutes,
+      (x, y) => cmpDate(x.date, y.date) || y.minutes - x.minutes,
     ),
     trimmed,
     overflow: result.leftover.filter((i) => i.protected).map((i) => toRef(i)),

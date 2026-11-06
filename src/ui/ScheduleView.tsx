@@ -91,19 +91,32 @@ function EventForm() {
   const set = (p: Partial<LifeEvent>) => setEv((e) => ({ ...e, ...p }));
   const exam = activeExam(state);
 
-  // この予定を入れたら計画がどう変わるか（入れる前に見せる）
-  const impact = useMemo(() => {
-    if (!exam || exam.subjects.length === 0 || !ev.title) return null;
-    const before = currentPlan(state, exam, today).future;
-    const withEv: AppState = { ...state, events: [...state.events, { ...ev, id: 'preview' }] };
-    const after = currentPlan(withEv, exam, today).future;
-    return {
-      lost: before.capacityMinutes - after.capacityMinutes,
-      trimmedBefore: before.trimmed.length,
-      trimmedAfter: after.trimmed.length,
-      overflowAfter: after.overflow.length,
-    };
-  }, [state, exam, ev, today]);
+  // この予定を入れたら計画がどう変わるか（入れる前に見せる）。
+  // 計画づくりは軽くないので、予定の名前を1文字打つたびに作り直さないようにする:
+  // 「今の計画」は予定の入力と関係ないので別に覚えておき、「入れたあとの計画」は
+  // 勉強時間に効く項目（日付・時刻・終日・くり返し）が変わったときだけ作り直す
+  const hasPlan = !!exam && exam.subjects.length > 0;
+  const hasTitle = ev.title !== '';
+  const before = useMemo(
+    () => (hasPlan && hasTitle && exam ? currentPlan(state, exam, today).future : null),
+    [state, exam, today, hasPlan, hasTitle],
+  );
+  const { date, allDay, start, end, repeatWeekly, repeatUntil } = ev;
+  const after = useMemo(() => {
+    if (!hasPlan || !hasTitle || !exam) return null;
+    const preview: LifeEvent = { ...emptyEvent(today), id: 'preview', title: 'preview', date, allDay, start, end, repeatWeekly, repeatUntil };
+    const withEv: AppState = { ...state, events: [...state.events, preview] };
+    return currentPlan(withEv, exam, today).future;
+  }, [state, exam, today, hasPlan, hasTitle, date, allDay, start, end, repeatWeekly, repeatUntil]);
+  const impact =
+    before && after
+      ? {
+          lost: before.capacityMinutes - after.capacityMinutes,
+          trimmedBefore: before.trimmed.length,
+          trimmedAfter: after.trimmed.length,
+          overflowAfter: after.overflow.length,
+        }
+      : null;
 
   const valid = ev.title.trim() !== '' && (ev.allDay || (ev.start && ev.end && ev.start < ev.end));
 
