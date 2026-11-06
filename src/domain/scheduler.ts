@@ -9,10 +9,13 @@
  * - 苦手度・目標点との差が大きい教科ほど重みを上げ、空いた時間には重い教科を前倒しで入れる
  * - 1日に扱う教科数と、1教材・1教科あたりの時間に上限を設けて、ダラダラ1教科だけにならないようにする
  * - 使える時間の loadFactor 分だけ埋め、残りは遅れを吸収する予備にする
- * - 時間が足りないときは、点につながりにくいもの（得意教科の仕上げ・提出物でない1周目）から削り、
- *   何を削ったかを返す。提出物の1周目だけは削らない
+ * - 暗記ものの3周目（直前の総チェック）は、2周目の途中でも1周目が終わっていれば入れる（2周目待ちで消えないように）
+ * - 時間が足りないときは、点につながりやすいもの（提出物の1周目 → 苦手教科の解き直し → 1周目 → 仕上げ）
+ *   から決まった順に入れ、同じ優先度のものは同じ割合だけ範囲の頭から残す（教材を丸ごと消すより、
+ *   残した範囲を最後の総チェックまでやる）。何を削ったかを返す。提出物の1周目だけは削らない
+ * - 項目を1つずつ外して試すやり方と違い、時間が少し変わっただけで残る教材がガラッと入れ替わることがない
  * - 「さらっと眺める」教材（参考書など）は重みを下げ、先に削る
- * - どれだけ時間が足りなくても、どの教科も1周目を最低1つは残し、一度は計画に入れる（勉強0分の教科を作らない）
+ * - どれだけ時間が足りなくても、どの教科にも少しは残す（勉強0分の教科を作らない）
  */
 import { addDays, dateRange, diffDays } from './date.ts';
 import type {
@@ -38,11 +41,24 @@ const PASS1_DEADLINE_RATIO = 0.5;
 /** 3周目を始める日（テストの何日前から） */
 const PASS3_START_DAYS_BEFORE = 3;
 /**
- * 入らなかったときの損の重み（1分あたり）。時間が足りないときに何を残すかを決める。
+ * 入らなかったときの損の重み（1分あたり）。時間が足りないときに、教科の中で何から残すかを決める。
  * 提出物の1周目は出さないといけないので別格。それ以外は「×を直す2周目」が一番点につながり、
- * 提出物でない1周目（教科書の読み直しなど）はその次、仕上げが最後
+ * 提出物でない1周目（教科書の読み直しなど）はその次。
+ * 暗記ものの3周目はテスト直前の総チェックで、短い時間で全体に触れられるので2周目と同じ扱い。
+ * 問題ものの3周目（2周目でも×だったものだけ）が最後。
+ * ただし前の周が残っていれば先には入れない（buildPlan で前の周の値を上限にする）
  */
-const LOSS_PER_MIN = { submission1: 100, pass1: 2.5, pass2: 3, pass3: 1 } as const;
+const LOSS_PER_MIN = { submission1: 100, pass1: 2.5, pass2: 3, pass3Memory: 3, pass3: 1 } as const;
+/**
+ * 時間が足りないときに試す、残す量の合計の割合（使える時間の何割分を残すか）。
+ * 1.0 から BUDGET_SCALE_MIN まで BUDGET_SCALE_STEPS 段階で試す
+ */
+const BUDGET_SCALE_MIN = 0.5;
+const BUDGET_SCALE_STEPS = 10;
+/** 控えめな案に切り替えるのは、入らなかった分の損がこの割合以上小さくなるときだけ */
+const BUDGET_SCALE_GAIN = 0.05;
+/** 時間が足りなくても、どの教科にもこれだけは残す（分） */
+const MIN_SUBJECT_MIN = 30;
 /** 「さらっと眺める」教材の重みの倍率。時間が足りないときに先に削り、前倒しも後回しにする */
 const SKIM_WEIGHT_FACTOR = 0.3;
 /** 1日の目安量を均等ペースよりどれだけ多めにするか（前倒し気味にして終盤に余裕を残す） */
@@ -282,6 +298,16 @@ function cmpDate(a: ISODate, b: ISODate): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/**
+ * その周を始める前に終わっていないといけない周。
+ * 暗記ものの3周目（直前の総チェック）は範囲全体をもう一度見るだけなので、1周目が終わっていれば始められる
+ */
+function prevPassOf(pass: Pass, memory: boolean): Pass | undefined {
+  if (pass === 1) return undefined;
+  if (pass === 3 && memory) return 1;
+  return (pass - 1) as Pass;
+}
+
 function buildItems(input: PlanInput): WorkItem[] {
   const { exam, startDate } = input;
   const logs = [...input.logs, ...(input.assumedDone ?? []).map(assumedToLog)];
@@ -308,7 +334,8 @@ function buildItems(input: PlanInput): WorkItem[] {
         if (pass > m.passes) continue;
         const remaining = prog.target[pass] - prog.done[pass];
         // 前の周が残っているなら、その周が終わるまで始めない（allocate 内で解放する）
-        const prevLeft = pass > 1 && prog.target[(pass - 1) as Pass] - prog.done[(pass - 1) as Pass] > 0;
+        const prev = prevPassOf(pass, memory);
+        const prevLeft = prev !== undefined && prog.target[prev] - prog.done[prev] > 0;
         const baseRelease = pass === 3 ? maxDate(startDate, pass3Start) : startDate;
         const hardDeadline =
           pass === 1 && m.isSubmission && m.dueDate
@@ -419,13 +446,18 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
     // 今日扱う教科の枠は、「理想のペース（目安の締切までに均等に進める）からの遅れ」が
     // 大きい教科から順に決める。昨日やった教科は遅れが小さくなるので、自然にローテーションになる
     const lag = new Map<string, number>();
+    const size = new Map<string, number>();
     for (const i of eligibleAtStart) {
       const from = maxDate(i.release, input.startDate);
       const span = Math.max(1, diffDays(from, i.deadline) + 1);
       const frac = Math.min(1, (diffDays(from, day) + 1) / span);
       const behindUnits = i.initial * frac - (i.initial - i.remaining);
       lag.set(i.subject.id, (lag.get(i.subject.id) ?? 0) + behindUnits * i.mpu * i.weight);
+      size.set(i.subject.id, (size.get(i.subject.id) ?? 0) + i.initial * i.mpu);
     }
+    // 遅れは「その教科の量のうち何割遅れているか」で比べる。分のままだと、量の多い教科がいつも上に来て、
+    // 量の少ない教科（単語帳だけ、など）は何日も順番が回ってこない
+    for (const [sid, v] of lag) lag.set(sid, v / Math.max(MIN_CHUNK_MIN, size.get(sid)!));
     // 遅れを分で比べると、量の多い教科がいつも上に来て、量の少ない教科（単語帳だけ、など）に
     // 順番が回らないまま試験日になることがある。この計画でまだ一度も入っていない教科を先にして、
     // どの教科にも一度は手をつけさせる
@@ -478,10 +510,12 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
       subjectMin.set(it.subject.id, (subjectMin.get(it.subject.id) ?? 0) + minutes);
       itemMin.set(it.key, (itemMin.get(it.key) ?? 0) + minutes);
 
-      if (it.remaining === 0 && it.pass < 3) {
-        // 次の周は「次の日以降」に解放（間を空けて解き直す）
-        const next = byKey.get(`${it.subject.id}|${it.material.id}|${it.pass + 1}`);
-        if (next) {
+      if (it.remaining === 0) {
+        // この周を待っていた周は「次の日以降」に解放（間を空けて解き直す）
+        for (const pass of [2, 3] as Pass[]) {
+          if (prevPassOf(pass, it.memory) !== it.pass) continue;
+          const next = byKey.get(`${it.subject.id}|${it.material.id}|${pass}`);
+          if (!next) continue;
           const earliest =
             next.pass === 3
               ? addDays(next.examDate, -PASS3_START_DAYS_BEFORE)
@@ -542,7 +576,7 @@ function allocate(items: WorkItem[], input: PlanInput, reserved: PlannedTask[] =
   return { tasks, leftover: items.filter((i) => i.remaining > 0) };
 }
 
-/** 入らなかったときの「損」の大きさ。苦手な教科ほど大きい */
+/** 入らなかったときの「損」の大きさ（1分あたり）。苦手な教科ほど・眺める教材でないほど大きい */
 function lossValue(i: WorkItem): number {
   const base = i.protected
     ? LOSS_PER_MIN.submission1
@@ -550,12 +584,78 @@ function lossValue(i: WorkItem): number {
       ? LOSS_PER_MIN.pass1
       : i.pass === 2
         ? LOSS_PER_MIN.pass2
-        : LOSS_PER_MIN.pass3;
+        : i.memory
+          ? LOSS_PER_MIN.pass3Memory
+          : LOSS_PER_MIN.pass3;
   return base * i.weight;
 }
 
-function totalLoss(leftover: WorkItem[], dropped: WorkItem[]): number {
-  return [...leftover, ...dropped].reduce((s, i) => s + i.remaining * i.mpu * lossValue(i), 0);
+function itemMinutes(i: WorkItem, units = i.remaining): number {
+  return units * i.mpu;
+}
+
+/**
+ * 時間が足りないときに、どの項目を何単位残すかを決める（budgetMinutes に収まるように）。
+ * - 提出物の1周目は必ず全部残す
+ * - 残りは「入らなかったときの損」の大きい順に入れる。前の周が残っているのに次の周を残しても
+ *   始められないので、各項目の優先度は前の周の優先度を上限にする
+ * - 同じ優先度の項目が並んだところで時間が尽きたら、その全部を同じ割合だけ（1周目なら範囲の頭から）残す。
+ *   1周目・2周目・暗記の総チェックが同じ割合になるので、残した範囲は最後の総チェックまでできる
+ * - どの教科にも最低 MIN_SUBJECT_MIN 分は残す（勉強0分の教科を作らない）
+ * 決まった順に上から入れるだけなので、使える時間が増えたら、残る量はどの項目も減らない
+ */
+function selectByPriority(items: WorkItem[], budgetMinutes: number): Map<string, number> {
+  const priority = new Map<string, number>();
+  for (const i of items) {
+    // buildItems は教材ごとに1→2→3周目の順に並べるので、前の周の優先度はもう出ている
+    const prev = prevPassOf(i.pass, i.memory);
+    const own = lossValue(i);
+    const cap = prev === undefined ? Infinity : (priority.get(`${i.subject.id}|${i.material.id}|${prev}`) ?? own);
+    priority.set(i.key, Math.min(own, cap));
+  }
+  const keep = new Map<string, number>();
+  let left = budgetMinutes;
+  const tiers = new Map<number, WorkItem[]>();
+  for (const i of items) {
+    if (i.remaining <= 0) continue;
+    if (i.protected) {
+      keep.set(i.key, i.remaining);
+      left -= itemMinutes(i);
+      continue;
+    }
+    // 浮動小数の誤差で同じ優先度が別の段に分かれないよう、丸めてまとめる
+    const p = Math.round(priority.get(i.key)! * 1e6) / 1e6;
+    tiers.set(p, [...(tiers.get(p) ?? []), i]);
+  }
+  for (const [, tier] of [...tiers].sort((x, y) => y[0] - x[0])) {
+    if (left <= 0) break;
+    const cost = tier.reduce((s, i) => s + itemMinutes(i), 0);
+    const ratio = Math.min(1, left / cost);
+    for (const i of tier) {
+      const units = Math.floor(i.remaining * ratio + 1e-9);
+      if (units > 0) keep.set(i.key, units);
+    }
+    left -= cost * ratio;
+  }
+  // 1つも残らなかった教科は、優先度が一番高い項目を最低 MIN_SUBJECT_MIN 分だけ残す
+  const keptSubjects = new Set(items.filter((i) => (keep.get(i.key) ?? 0) > 0).map((i) => i.subject.id));
+  for (const i of [...items].sort((x, y) => priority.get(y.key)! - priority.get(x.key)! || x.pass - y.pass)) {
+    if (i.remaining <= 0 || keptSubjects.has(i.subject.id)) continue;
+    keep.set(i.key, Math.min(i.remaining, Math.max(1, Math.ceil(MIN_SUBJECT_MIN / i.mpu))));
+    keptSubjects.add(i.subject.id);
+  }
+  return keep;
+}
+
+/** 項目を、残す分（範囲の頭から units）だけに切り詰める */
+function headOf(i: WorkItem, units: number): WorkItem {
+  return { ...i, remaining: units, initial: units, pages: i.pages?.slice(0, units) };
+}
+
+/** 項目を、削った分（範囲の後ろ、残す分を除いた残り）だけにする */
+function tailOf(i: WorkItem, keptUnits: number): WorkItem {
+  const rest = i.remaining - keptUnits;
+  return { ...i, remaining: rest, initial: rest, pages: i.pages?.slice(keptUnits) };
 }
 
 function toRef(i: WorkItem, units = i.remaining): PlanItemRef {
@@ -575,19 +675,47 @@ function releaseAfterMainPlan(
   dropped: Set<string>,
   startDate: ISODate,
 ): void {
-  if (it.pass === 1) return;
-  const prevKey = `${it.subject.id}|${it.material.id}|${it.pass - 1}`;
+  const prev = prevPassOf(it.pass, it.memory);
+  if (prev === undefined) {
+    // 1周目の続き（範囲の後ろ）は、本計画で頭の方をやる日より前に入れない（ページの順番が逆にならないように）
+    const head = main.tasks.filter((t) => t.materialId === it.material.id && t.pass === 1);
+    if (head.length > 0) it.release = maxDate(it.release, head.reduce((mx, t) => maxDate(mx, t.date), startDate));
+    return;
+  }
+  const prevKey = `${it.subject.id}|${it.material.id}|${prev}`;
   // 前の周も外されているなら、詰め直しの中で前の周が終わったときに解放される
   if (dropped.has(prevKey)) return;
   if (main.leftover.some((i) => i.key === prevKey)) return;
-  const prevTasks = main.tasks.filter(
-    (t) => t.materialId === it.material.id && t.pass === it.pass - 1,
-  );
+  const prevTasks = main.tasks.filter((t) => t.materialId === it.material.id && t.pass === prev);
   if (prevTasks.length === 0) return; // 前の周は計画前に終わっている（buildItems の値のまま）
   const lastPrev = prevTasks.reduce((mx, t) => maxDate(mx, t.date), startDate);
   const earliest =
     it.pass === 3 ? addDays(it.examDate, -PASS3_START_DAYS_BEFORE) : startDate;
   it.release = maxDate(addDays(lastPrev, 1), earliest);
+}
+
+/**
+ * 本計画のタスクに、詰め直しのタスクを足す。途中まで残した項目は、同じ日に頭の方（本計画）と
+ * 続き（詰め直し）が両方入ることがある。タスクの id は日付と項目で決まるので、別々にすると id がぶつかる。
+ * 1つのタスクにまとめる（続きは頭の方より後ろの番号なので、範囲は後ろにつなぐ）
+ */
+function mergeSameTasks(main: PlannedTask[], fill: PlannedTask[]): PlannedTask[] {
+  const byId = new Map(main.map((t) => [t.id, { ...t }]));
+  for (const f of fill) {
+    const t = byId.get(f.id);
+    if (!t) {
+      byId.set(f.id, f);
+      continue;
+    }
+    t.units += f.units;
+    t.minutes += f.minutes;
+    if (f.ranges) {
+      t.ranges = appendRanges(t.ranges ?? [], pagesOf(f.ranges));
+      t.from = t.ranges[0][0];
+      t.to = t.ranges[t.ranges.length - 1][1];
+    }
+  }
+  return [...byId.values()];
 }
 
 /** 計画を作る。入りきらないときは削れるものから削って作り直す */
@@ -617,62 +745,59 @@ export function buildPlan(rawInput: PlanInput): PlanResult {
     0,
   );
 
-  const dropped = new Set<string>();
-  const run = () => allocate(freshItems().filter((i) => !dropped.has(i.key)), input);
-  const loss = (r: AllocResult) => totalLoss(r.leftover, base.filter((i) => dropped.has(i.key)));
-  let result = run();
-
-  // 入りきらないときは、損の小さい項目を丸ごと外して、もっと大事なもの（提出物・苦手教科の解き直し）に
-  // 時間を回せるか試す。全体の「損」が減るときだけ外す
-  if (result.leftover.length > 0) {
-    // 試す順: 損の小さい（点につながりにくい・得意な教科の）ものから
-    const candidates = base
-      .filter((i) => !i.protected && i.remaining > 0)
-      .sort((x, y) => lossValue(x) - lossValue(y));
-    // 教科ごとに、外していない1周目がいくつ残っているか。
-    // 損は1分あたりで比べるので、放っておくと教科がまるごと外れて「その教科は勉強0分」になりうる。
-    // 2・3周目は1周目が終わるまで始まらないので、1周目を最低1つは残して、どの教科にも手をつけさせる
-    const pass1Left = new Map<string, number>();
-    for (const i of base) {
-      if (i.pass === 1 && i.remaining > 0) pass1Left.set(i.subject.id, (pass1Left.get(i.subject.id) ?? 0) + 1);
-    }
-    for (const c of candidates) {
-      if (result.leftover.length === 0) break;
-      if (c.pass === 1 && (pass1Left.get(c.subject.id) ?? 0) <= 1) continue;
-      dropped.add(c.key);
-      // 外した項目の損だけで今の損を超えるなら、作り直しても採用されない（入りきらない分の損は0以上）。
-      // allocate は重いので、結果が変わらないとわかる試しは飛ばす。浮動小数の足し算の誤差で
-      // 判定が変わらないよう、わずかに余裕を見てはっきり超えるときだけ飛ばす
-      const droppedLoss = totalLoss([], base.filter((i) => dropped.has(i.key)));
-      const current = loss(result);
-      if (droppedLoss > current + 1e-6 * Math.max(1, current)) {
-        dropped.delete(c.key);
-        continue;
-      }
-      const trial = run();
-      if (loss(trial) < loss(result) - 1e-9) {
-        result = trial;
-        if (c.pass === 1) pass1Left.set(c.subject.id, (pass1Left.get(c.subject.id) ?? 0) - 1);
-      } else {
-        dropped.delete(c.key);
-      }
-    }
-  }
-
-  // 外した項目は、確定した計画の空き時間に入るだけ入れる
-  let filled: AllocResult = { tasks: [], leftover: [] };
-  if (dropped.size > 0) {
-    const fillItems = freshItems().filter((i) => dropped.has(i.key));
+  /** 残す単位数を決めて計画を作り、外した分を空き時間に詰め直す */
+  const planWith = (keep?: Map<string, number>): { result: AllocResult; filled: AllocResult } => {
+    if (!keep) return { result: allocate(freshItems(), input), filled: { tasks: [], leftover: [] } };
+    const dropped = new Set(base.filter((i) => i.remaining > (keep.get(i.key) ?? 0)).map((i) => i.key));
+    const kept = (i: WorkItem) => keep.get(i.key) ?? 0;
+    const result = allocate(
+      freshItems()
+        .filter((i) => i.remaining === 0 || kept(i) > 0)
+        .map((i) => (i.remaining === 0 ? i : headOf(i, kept(i)))),
+      input,
+    );
+    // 外した分は、確定した計画の空き時間に入るだけ入れる（途中までにした項目は、その続きから）
+    const fillItems = freshItems()
+      .filter((i) => dropped.has(i.key))
+      .map((i) => tailOf(i, kept(i)));
     for (const it of fillItems) releaseAfterMainPlan(it, result, dropped, input.startDate);
-    filled = allocate(fillItems, input, result.tasks);
+    return { result, filled: allocate(fillItems, input, result.tasks) };
+  };
+  const lossOf = (p: { result: AllocResult; filled: AllocResult }) =>
+    [...p.result.leftover, ...p.filled.leftover].reduce((s, i) => s + itemMinutes(i) * lossValue(i), 0);
+
+  let best = planWith();
+  // 入りきらないときは、大事なものから残し、残りを外して作り直す（selectByPriority）。
+  // 残す量を使える時間いっぱいにすると、テストの早い教科は使える日が少ないので詰め込みすぎになり、
+  // 締切に押し出される項目が出る。残す量を少しずつ控えめにした案も作り、入らなかった分の損が
+  // はっきり（BUDGET_SCALE_GAIN 以上）小さくなるときだけ控えめな案に切り替える。
+  // わずかな差で切り替えると、使える時間が少し変わっただけで計画がガラッと変わってしまう
+  if (best.result.leftover.length > 0) {
+    best = planWith(selectByPriority(base, capacityMinutes));
+    let bestLoss = lossOf(best);
+    for (let k = 1; k <= BUDGET_SCALE_STEPS; k++) {
+      const scale = 1 - (k * (1 - BUDGET_SCALE_MIN)) / BUDGET_SCALE_STEPS;
+      const trial = planWith(selectByPriority(base, capacityMinutes * scale));
+      const l = lossOf(trial);
+      if (l < bestLoss * (1 - BUDGET_SCALE_GAIN)) {
+        best = trial;
+        bestLoss = l;
+      }
+    }
   }
+  const { result, filled } = best;
 
   // 2・3周目で入らなかった分は「削った」として見せる
-  const trimmed = [...result.leftover, ...filled.leftover]
-    .filter((i) => !i.protected)
-    .map((i) => toRef(i));
+  // 途中まで残した項目は「頭の方で入りきらなかった分」と「後ろの削った分」の2つに分かれるので、1つにまとめる
+  const trimmedByKey = new Map<string, PlanItemRef>();
+  for (const i of [...result.leftover, ...filled.leftover]) {
+    if (i.protected) continue;
+    const prev = trimmedByKey.get(i.key);
+    trimmedByKey.set(i.key, toRef(i, i.remaining + (prev?.units ?? 0)));
+  }
+  const trimmed = [...trimmedByKey.values()];
   return {
-    tasks: [...result.tasks, ...filled.tasks].sort(
+    tasks: mergeSameTasks(result.tasks, filled.tasks).sort(
       (x, y) => cmpDate(x.date, y.date) || y.minutes - x.minutes,
     ),
     trimmed,

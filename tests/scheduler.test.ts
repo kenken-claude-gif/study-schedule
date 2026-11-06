@@ -260,13 +260,13 @@ function mat(id: string, kind: Material['kind'], unit: Material['unit'], a: numb
   return { id, name: id, kind, unit, rangeStart: a, rangeEnd: b, minutesPerUnit: mpu, isSubmission: false, passes: 3, ...extra };
 }
 
-test('量が使える時間の3倍あっても、勉強0分の教科は出ない', () => {
-  // 実際の高1の定期テスト範囲（11教科・35教材）と同じ量。全部3周すると約140時間、使える時間は約43時間
+/** 実際の高1の定期テスト範囲（11教科・35教材）と同じ量。全部3周すると約140時間 */
+function realisticExam(): Exam {
   const S = (id: string, kind: ExamSubject['kind'], examDate: string, materials: Material[]): ExamSubject =>
     ({ id, name: id, kind, examDate, weakness: 3, materials });
   const tb = (id: string, a: number, b: number) => mat(id, 'textbook', 'page', a, b, 4);
   const wb = (id: string, a: number, b: number, isSubmission = false) => mat(id, 'workbook', 'page', a, b, 8, { isSubmission });
-  const exam: Exam = {
+  return {
     id: 'big', name: '後期中間', studyStart: '2026-11-07',
     subjects: [
       S('現国', 'mixed', '2026-11-24', [mat('kanji', 'vocab', 'page', 134, 175, 6)]),
@@ -282,12 +282,53 @@ test('量が使える時間の3倍あっても、勉強0分の教科は出ない
       S('情報', 'mixed', '2026-11-29', [tb('inf1', 90, 122), tb('inf2', 154, 170)]),
     ],
   };
-  const capacity = (d: string) => ([0, 6].includes(new Date(`${d}T00:00Z`).getUTCDay()) ? 240 : 120);
-  const r = buildPlan({ exam, startDate: '2026-11-07', capacity, logs: [], settings });
+}
+
+/** 平日 weekday 分・土日 weekend 分 */
+const weekly = (weekday: number, weekend: number) => (d: string) =>
+  [0, 6].includes(new Date(`${d}T00:00Z`).getUTCDay()) ? weekend : weekday;
+
+const minutesBySubject = (exam: Exam, tasks: PlannedTask[]) =>
+  new Map(exam.subjects.map((s) => [s.id, tasks.filter((t) => t.subjectId === s.id).reduce((a, t) => a + t.minutes, 0)]));
+
+test('量が使える時間の3倍あっても、勉強0分の教科は出ない', () => {
+  const exam = realisticExam();
+  const r = buildPlan({ exam, startDate: '2026-11-07', capacity: weekly(120, 240), logs: [], settings });
   assert.ok(r.demandMinutes > r.capacityMinutes * 3, '時間が足りないケースになっていない');
+  for (const [id, minutes] of minutesBySubject(exam, r.tasks)) assert.ok(minutes > 0, `${id} が0分`);
+});
+
+test('範囲の途中まで残すときも、同じ日の同じ教材は1つのタスクにまとまり、id が重ならない', () => {
+  const exam = realisticExam();
+  const r = buildPlan({ exam, startDate: '2026-11-07', capacity: weekly(120, 300), logs: [], settings });
+  const ids = r.tasks.map((t) => t.id);
+  assert.equal(new Set(ids).size, ids.length, '同じ id のタスクがある');
+  // 1周目の範囲は、教材ごとに重ならない
+  for (const m of exam.subjects.flatMap((s) => s.materials)) {
+    const pages = tasksOf(r.tasks, m.id, 1).flatMap((t) => (t.ranges ?? []).flatMap(([a, b]) => Array.from({ length: b - a + 1 }, (_, k) => a + k)));
+    assert.equal(new Set(pages).size, pages.length, `${m.id} の1周目に同じページが2回`);
+  }
+});
+
+test('量が使える時間の3倍あっても、暗記ものの仕上げ（直前の総チェック）は消えない', () => {
+  const exam = realisticExam();
+  const r = buildPlan({ exam, startDate: '2026-11-07', capacity: weekly(120, 240), logs: [], settings });
+  const pass3 = r.tasks.filter((t) => t.pass === 3);
+  assert.ok(pass3.length > 0, '仕上げが0件');
+  // 仕上げはテスト3日前〜前日に入る
+  for (const t of pass3) {
+    const s = exam.subjects.find((x) => x.id === t.subjectId)!;
+    assert.ok(t.date >= addDays(s.examDate, -3) && t.date < s.examDate, `${t.materialId} 仕上げ ${t.date}`);
+  }
+});
+
+test('時間が足りないとき、使える時間を増やしても大きく減る教科は出ない', () => {
+  const exam = realisticExam();
+  const small = minutesBySubject(exam, buildPlan({ exam, startDate: '2026-11-07', capacity: weekly(120, 300), logs: [], settings }).tasks);
+  const large = minutesBySubject(exam, buildPlan({ exam, startDate: '2026-11-07', capacity: weekly(180, 360), logs: [], settings }).tasks);
   for (const s of exam.subjects) {
-    const minutes = r.tasks.filter((t) => t.subjectId === s.id).reduce((a, t) => a + t.minutes, 0);
-    assert.ok(minutes > 0, `${s.id} が0分`);
+    // 日ごとの詰め方で多少は前後するが、半分以下に減るようなことはない
+    assert.ok(large.get(s.id)! >= small.get(s.id)! * 0.8, `${s.id}: ${small.get(s.id)}分 → ${large.get(s.id)}分`);
   }
 });
 
