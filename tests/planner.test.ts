@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AHEAD_PREFIX, currentPlan, ensureTodayFrozen } from '../src/app/planner.ts';
+import { AHEAD_PREFIX, behind, currentPlan, ensureTodayFrozen } from '../src/app/planner.ts';
+import { buildSnapshot } from '../src/app/share.ts';
+import { addDays } from '../src/domain/date.ts';
 import type { AppState, ProgressLog } from '../src/domain/types.ts';
 
 const TODAY = '2026-11-02';
@@ -78,4 +80,21 @@ test('今日の計画を作り直しても、先取りした分は今日のタ�
   // 先取り＋今日＋明日以降で、範囲（30ページ）をちょうど1回ずつ
   const plan = currentPlan(rebuilt, rebuilt.exams[0], TODAY);
   assert.equal(30 - todayUnits + pass1Units(rebuiltP1) + pass1Units(plan.future.tasks), 30);
+});
+
+test('勉強を始める日を後ろにずらしたら、ずらす前に確定した日の分は遅れに数えない', () => {
+  // 今日の計画が確定したあとで、開始日を明日にずらす
+  const s0 = ensureTodayFrozen(state(), TODAY);
+  assert.ok((s0.dayPlans.e1?.[TODAY] ?? []).length > 0);
+  const tomorrow = addDays(TODAY, 1);
+  const s1: AppState = { ...s0, exams: [{ ...s0.exams[0], studyStart: tomorrow }] };
+
+  const b = behind(s1, s1.exams[0], tomorrow);
+  assert.equal(b.minutes, 0);
+  assert.equal(b.tasks.length, 0);
+  // 家族に見せる記録にも出さない
+  assert.deepEqual(buildSnapshot(s1, s1.exams[0], tomorrow).past, []);
+
+  // 開始日をずらしていなければ、これまでどおり遅れに数える
+  assert.ok(behind(s0, s0.exams[0], tomorrow).minutes > 0);
 });

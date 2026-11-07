@@ -125,7 +125,8 @@ export function buildSnapshot(state: AppState, exam: Exam, today: ISODate, now: 
   }));
 
   const past = Object.entries(state.dayPlans[exam.id] ?? {})
-    .filter(([d]) => d < today)
+    // 勉強を始める日より前に確定した日（開始日をずらす前の分）は、家族にも見せない
+    .filter(([d]) => d < today && d >= exam.studyStart)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([d, ts]): [ISODate, number, number] => [
       d,

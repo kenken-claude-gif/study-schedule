@@ -106,13 +106,16 @@ export interface BehindInfo {
   minutes: number;
 }
 
-/** 前の日までの確定計画のうち、終わっていない分 */
+/**
+ * 前の日までの確定計画のうち、終わっていない分。
+ * 勉強を始める日より前の計画は数えない（開始日を後ろにずらしたとき、ずらす前に確定した日の分が初日から遅れにならないように）
+ */
 export function behind(state: AppState, exam: Exam, today: ISODate): BehindInfo {
   const plans = state.dayPlans[exam.id] ?? {};
   const tasks: BehindInfo['tasks'] = [];
   let minutes = 0;
   for (const [date, ts] of Object.entries(plans)) {
-    if (date >= today) continue;
+    if (date >= today || date < exam.studyStart) continue;
     for (const t of ts) {
       const done = doneForTask(state, t.id);
       if (done < t.units) {
