@@ -163,13 +163,13 @@ export function buildSnapshot(state: AppState, exam: Exam, today: ISODate, now: 
   };
 }
 
-function toBase64Url(bytes: Uint8Array): string {
+export function toBase64Url(bytes: Uint8Array): string {
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function fromBase64Url(text: string): Uint8Array {
+export function fromBase64Url(text: string): Uint8Array {
   const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
@@ -181,7 +181,7 @@ export async function encodeSnapshot(snapshot: ShareSnapshot): Promise<string> {
 }
 
 /** 展開する。上限を超えたら途中でやめる（小さなリンクが巨大に膨らむ細工への対策） */
-async function inflateLimited(bytes: Uint8Array): Promise<string> {
+export async function inflateLimited(bytes: Uint8Array): Promise<string> {
   const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];

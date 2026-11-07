@@ -2,6 +2,8 @@ import { useRef, useState } from 'react';
 import { isAppState, useStore } from '../app/store.tsx';
 import { GUIDE } from '../domain/labels.ts';
 import { todayISO } from '../domain/date.ts';
+import { decodeBackupCode } from '../app/backupCode.ts';
+import type { AppState } from '../domain/types.ts';
 
 export function GuideView() {
   return (
@@ -113,6 +115,53 @@ function BackupCard() {
           e.target.value = '';
         }}
       />
+      {msg && <div className="small">{msg}</div>}
+      <PasteCode />
+    </div>
+  );
+}
+
+/** ファイルを保存できない端末向けに、メッセージで届いたコードを貼り付けて戻す */
+function PasteCode() {
+  const { replace } = useStore();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const restore = async () => {
+    let data: AppState;
+    try {
+      data = await decodeBackupCode(text);
+    } catch (e) {
+      console.warn('コードを読み込めませんでした:', e);
+      setMsg('コードを読み込めなかった。途中で切れていないか、2つに分かれているなら両方を順番に貼ったか確かめてね。');
+      return;
+    }
+    if (!confirm('今のデータをコードの内容で置き換える？')) return;
+    replace(data);
+    setText('');
+    setOpen(false);
+    setMsg('コードから戻したよ。');
+  };
+
+  if (!open) {
+    return (
+      <>
+        <button className="btn block" onClick={() => { setOpen(true); setMsg(''); }}>コードを貼り付けて戻す</button>
+        {msg && <div className="small">{msg}</div>}
+      </>
+    );
+  }
+  return (
+    <div className="stack">
+      <p className="small muted" style={{ margin: 0 }}>
+        届いたメッセージを長押ししてコピーし、下に貼り付けてね。2つに分かれて届いたときは、1つ目のあとに2つ目を続けて貼る。
+      </p>
+      <textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder="SSB1. から始まるコード" />
+      <div className="row">
+        <button className="btn" style={{ flex: 1 }} onClick={() => { setOpen(false); setText(''); setMsg(''); }}>やめる</button>
+        <button className="btn" style={{ flex: 1 }} disabled={text.trim() === ''} onClick={() => void restore()}>戻す</button>
+      </div>
       {msg && <div className="small">{msg}</div>}
     </div>
   );
