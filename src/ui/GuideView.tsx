@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { isAppState, useStore } from '../app/store.tsx';
 import { GUIDE } from '../domain/labels.ts';
 import { todayISO } from '../domain/date.ts';
-import { decodeBackupCode } from '../app/backupCode.ts';
+import { BackupCodeError, decodeBackupCode } from '../app/backupCode.ts';
 import type { AppState } from '../domain/types.ts';
 
 export function GuideView() {
@@ -134,7 +134,8 @@ function PasteCode() {
       data = await decodeBackupCode(text);
     } catch (e) {
       console.warn('コードを読み込めませんでした:', e);
-      setMsg('コードを読み込めなかった。途中で切れていないか、2つに分かれているなら両方を順番に貼ったか確かめてね。');
+      const why = e instanceof BackupCodeError ? e.message : '思わぬエラーが起きた。';
+      setMsg(`コードを読み込めなかった。理由：${why}`);
       return;
     }
     if (!confirm('今のデータをコードの内容で置き換える？')) return;

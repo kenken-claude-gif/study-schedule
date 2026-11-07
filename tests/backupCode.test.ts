@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { BACKUP_CODE_PREFIX, decodeBackupCode, encodeBackupCode, splitCode } from '../src/app/backupCode.ts';
+import { BACKUP_CODE_PREFIX, BackupCodeError, decodeBackupCode, encodeBackupCode, splitCode } from '../src/app/backupCode.ts';
 import type { AppState } from '../src/domain/types.ts';
 
 function sampleState(): AppState {
@@ -51,23 +51,42 @@ test('2つに分けて改行や空白をはさんで貼っても戻せる', asyn
   assert.deepEqual(await decodeBackupCode(` ${parts.join('\n\n')} \n`), s);
 });
 
-test('途中で切れたコードは読み込まない', async () => {
+test('途中で切れたコードは、切れているみたいと理由を出して読み込まない', async () => {
   const code = await encodeBackupCode(sampleState());
-  await assert.rejects(decodeBackupCode(code.slice(0, Math.floor(code.length / 2))));
+  await assert.rejects(decodeBackupCode(code.slice(0, Math.floor(code.length / 2))), (e: unknown) =>
+    e instanceof BackupCodeError && /途中で切れている/.test(e.message));
 });
 
-test('頭の文字がないもの・使えない文字が入ったものは読み込まない', async () => {
+test('2通の順番が逆だと読み込まない', async () => {
+  const [a, b] = splitCode(await encodeBackupCode(sampleState()), 60);
+  await assert.rejects(decodeBackupCode(b + a), BackupCodeError);
+});
+
+test('バックアップのJSONをそのまま貼ったときは、先頭が違うと貼った先頭を見せる', async () => {
+  await assert.rejects(decodeBackupCode(JSON.stringify(sampleState(), null, 2)), (e: unknown) =>
+    e instanceof BackupCodeError && e.message.includes('先頭が「SSB1.」になっていない') && e.message.includes('{"version":1'));
+});
+
+test('使わない文字が入っていたら、何文字目に何が入っているかを出す', async () => {
   const code = await encodeBackupCode(sampleState());
-  await assert.rejects(decodeBackupCode(code.slice(BACKUP_CODE_PREFIX.length)), /バックアップのコードではありません/);
-  await assert.rejects(decodeBackupCode(`${code}<script>`), /使えない文字/);
+  const pasted = `${code.slice(0, 20)}【1/2】${code.slice(20)}`;
+  await assert.rejects(decodeBackupCode(pasted), (e: unknown) =>
+    e instanceof BackupCodeError && e.message.includes('21文字目') && e.message.includes('「【」(U+3010)'));
+});
+
+test('貼り付けで紛れ込む目に見えない文字は取り除いて読める', async () => {
+  const s = sampleState();
+  const code = await encodeBackupCode(s);
+  const pasted = `﻿${code.slice(0, 30)}​\r\n　${code.slice(30)}⁠`;
+  assert.deepEqual(await decodeBackupCode(pasted), s);
 });
 
 test('形の正しくない中身は読み込まない', async () => {
   const bad = BACKUP_CODE_PREFIX + b64url(deflateRawSync(Buffer.from(JSON.stringify({ version: 1, exams: 'x' }))));
-  await assert.rejects(decodeBackupCode(bad), /形式ではありません/);
+  await assert.rejects(decodeBackupCode(bad), /バックアップの形になっていない/);
 });
 
 test('小さなコードが巨大に膨らむ細工は途中でやめる', async () => {
   const bomb = BACKUP_CODE_PREFIX + b64url(deflateRawSync(Buffer.alloc(5_000_000, 0x20)));
-  await assert.rejects(decodeBackupCode(bomb), /大きすぎます/);
+  await assert.rejects(decodeBackupCode(bomb), /大きすぎる/);
 });
